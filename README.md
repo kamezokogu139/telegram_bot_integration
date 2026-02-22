@@ -26,26 +26,6 @@ python bot.py
 ```bash
 export AFFISE_API_URL=https://api.your-domain.com
 ```
-
-### Прокси через VPS (для гео-ограниченных ссылок)
-
-Если ссылки не открываются из-за гео-ограничений, настройте прокси на VPS в нужной стране:
-
-1. Установите Squid (HTTP) или Dante/microsocks (SOCKS5) на VPS
-2. Запустите бота с переменной:
-
-```bash
-# HTTP прокси (Squid)
-export PROXY_URL=http://user:password@your-vps-ip:3128
-
-# или SOCKS5 (если используете Dante и т.п.)
-export PROXY_URL=socks5://user:password@your-vps-ip:1080
-
-python bot.py
-```
-
-Без `PROXY_URL` бот работает как раньше — ссылки открываются напрямую.
-
 ## Использование
 
 1. Запустите бота: `/start`
