@@ -15,7 +15,11 @@ def _read() -> dict:
             data = json.load(f)
             # Миграция: если есть admins, добавляем owner в approved
             if "approved" not in data and "admins" in data:
-                data["approved"] = list(set(data.get("admins", []) + ([data["owner"]] if data.get("owner") else []))
+                admins_list = data.get("admins", [])
+                owner_val = data.get("owner")
+                if owner_val is not None:
+                    admins_list = list(set(admins_list + [owner_val]))
+                data["approved"] = admins_list
             return data
     return {"owner": None, "approved": []}
 
