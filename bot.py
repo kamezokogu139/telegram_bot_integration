@@ -4,14 +4,8 @@ Telegram бот для отправки тестовых постбеков X-Pa
 1. Тестовая регистрация
 2. Тестовый депозит
 """
-import asyncio
 import logging
 
-# Исправление для Python 3.10+: создаём event loop до запуска бота
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    asyncio.set_event_loop(asyncio.new_event_loop())
 from telegram import BotCommand, BotCommandScopeChat, Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
