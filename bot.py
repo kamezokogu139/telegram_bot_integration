@@ -34,6 +34,7 @@ from postback_service import (
     get_offer_secure,
     send_postback,
 )
+from postback_logger import log_postback
 
 # Состояния для ConversationHandler
 AWAITING_LINK = 1
@@ -450,6 +451,23 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             status = 2
 
         success, message = send_postback(clickid, secure, goal, status, pid)
+
+        user = update.effective_user
+        try:
+            log_postback(
+                success=success,
+                user_id=user.id,
+                username=user.username,
+                first_name=user.first_name,
+                click_id=clickid,
+                offer_id=offer_id,
+                pid=pid,
+                goal=goal,
+                status=status,
+                error_message=None if success else message,
+            )
+        except Exception as e:
+            logger.warning("Не удалось записать лог постбека: %s", e)
 
         keyboard = _main_keyboard()
         if success:

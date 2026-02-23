@@ -31,3 +31,6 @@ TRACKER_DOMAINS = ["trk.xplink"]
 
 # Файл со списком админов (создаётся автоматически)
 ADMINS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "admins.json")
+
+# SQLite для логов постбеков
+POSTBACKS_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "postbacks.db")
