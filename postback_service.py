@@ -20,22 +20,43 @@ def _looks_like_click_id(value: str) -> bool:
     return value.replace("-", "").replace("_", "").isalnum()
 
 
+def _normalize_clickid_value(val: str) -> str | None:
+    """
+    Нормализует значение: если формат {clickid}_{your_sub}, берёт часть до '_'.
+    """
+    if not val:
+        return None
+    if "_" in val:
+        before_underscore = val.split("_", 1)[0]
+        if _looks_like_click_id(before_underscore):
+            return before_underscore
+    if _looks_like_click_id(val):
+        return val
+    return None
+
+
 def _extract_clickid_from_url(url: str) -> str | None:
     """
     Извлекает click_id из URL. Поддерживает явные имена и sub1-sub5.
-    Для sub1-sub5 проверяет формат значения (избегает sub1=google и т.п.).
+    Учитывает формат {clickid}_{your_sub} — берёт часть до '_'.
     """
     parsed = urlparse(url)
     params = parse_qs(parsed.query)
-    explicit_names = ["clickid", "click_id", "cbid", "aff_click_id", "external_id", "stag", "utm_content","partner_click_id","subid", "afp1","sub_id1"]
+    explicit_names = [
+        "clickid", "click_id", "cbid", "aff_click_id", "external_id",
+        "stag", "utm_content", "partner_click_id", "subid", "afp1",
+        "sub_id1", "anid",
+    ]
     for name in explicit_names:
         if name in params and params[name]:
-            return params[name][0]
+            normalized = _normalize_clickid_value(params[name][0])
+            if normalized:
+                return normalized
     for name in ["sub1", "sub2", "sub3", "sub4", "sub5"]:
         if name in params and params[name]:
-            val = params[name][0]
-            if _looks_like_click_id(val):
-                return val
+            normalized = _normalize_clickid_value(params[name][0])
+            if normalized:
+                return normalized
     return None
 
 
