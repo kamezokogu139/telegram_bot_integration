@@ -27,10 +27,21 @@ REQUEST_TIMEOUT = 30
 PROXY_URL = os.getenv("PROXY_URL", "").strip() or None
 
 # Домены трекеров: click_id в следующем редиректе после этих доменов, offer_id и pid — из URL этих доменов
-TRACKER_DOMAINS = ["trk.xplink"]
+TRACKER_DOMAINS = [
+    "trk.xplink",
+    "trk.goxp.tech",
+    "trk.xpgoal.io",
+    "trk.xplead.io",
+]
 
 # Файл со списком админов (создаётся автоматически)
 ADMINS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "admins.json")
+
+# Лог запросов доступа (для лимита 3 в день)
+REQUEST_ACCESS_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "request_access_log.json")
+
+# Лимит запросов доступа в день
+REQUEST_ACCESS_LIMIT_PER_DAY = 3
 
 # SQLite для логов постбеков
 POSTBACKS_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "postbacks.db")

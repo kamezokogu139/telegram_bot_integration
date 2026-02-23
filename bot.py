@@ -26,7 +26,7 @@ from telegram.ext import (
 import httpx
 
 from config import TELEGRAM_BOT_TOKEN, AFFISE_API_URL, AFFISE_API_KEY, PROXY_URL, TRACKER_DOMAINS
-from admin_service import is_admin, is_owner, get_owner, add_admin, remove_admin, list_admins
+from admin_service import is_admin, is_owner, get_owner, is_approved, add_approved, can_request_access, log_request_access
 from postback_service import (
     extract_clickid_from_redirect,
     extract_offer_id_from_url,
@@ -42,7 +42,7 @@ AWAITING_LINK = 1
 # Текст кнопок (Reply Keyboard)
 BTN_REG = "📝 Тестовая регистрация"
 BTN_DEPOSIT = "💰 Тестовый депозит"
-BTN_MENU = "📋 Меню"
+BTN_START = "🔄 Главное меню"
 CB_REG = "test_reg"
 CB_DEPOSIT = "test_deposit"
 
@@ -60,12 +60,10 @@ async def _set_commands_for_user(bot, user_id: int) -> None:
         BotCommand("help", "Справка"),
         BotCommand("cancel", "Отмена операции"),
     ]
-    if is_admin(user_id):
-        commands.append(BotCommand("status", "Статус сервисов"))
-        commands.append(BotCommand("admins", "Список админов"))
     if is_owner(user_id):
-        commands.append(BotCommand("addadmin", "Добавить админа"))
-        commands.append(BotCommand("removeadmin", "Удалить админа"))
+        commands.append(BotCommand("status", "Статус сервисов"))
+    if not is_approved(user_id):
+        commands.append(BotCommand("request_access", "Запросить доступ"))
     try:
         await bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=user_id))
     except Exception:
@@ -77,7 +75,7 @@ async def _set_default_commands(app: Application) -> None:
     commands = [
         BotCommand("start", "Главное меню"),
         BotCommand("help", "Справка"),
-        BotCommand("request_access", "Запросить доступ админа"),
+        BotCommand("request_access", "Запросить доступ"),
         BotCommand("cancel", "Отмена операции"),
     ]
     await app.bot.set_my_commands(commands)
@@ -88,22 +86,21 @@ def _help_text(user_id: int) -> str:
     lines = [
         "📖 *Справка*\n",
         "*Команды:*",
-        "/start — главное меню",
-        "/help — эта справка",
-        "/request\\_access — запросить доступ админа",
+        "/start — возврат в главное меню",
         "/cancel — отмена текущей операции",
+        "",
+        "*Кнопки:*",
+        "📝 Тестовая регистрация — отправка постбека с goal=registration, status=1",
+        "💰 Тестовый депозит — отправка постбека с goal=deposit, status=2",
+        "",
+        "*Как пользоваться:*",
+        "1. Нажмите кнопку «📝 Тестовая регистрация» или «💰 Тестовый депозит»",
+        "2. Отправьте ссылку",
     ]
-    if is_admin(user_id):
-        lines.append("/status — проверка работы бота и сервисов")
-        lines.append("/admins — список админов")
     if is_owner(user_id):
-        lines.append("/addadmin — добавить админа")
-        lines.append("/removeadmin — удалить админа")
-    lines.append("")
-    lines.append("*Как пользоваться:*")
-    lines.append("1. Нажмите кнопку «📝 Тестовая регистрация» или «💰 Тестовый депозит»")
-    lines.append("2. Отправьте ссылку")
-    lines.append("3. Бот пройдёт по редиректам, найдёт click\\_id, offer\\_id, pid и отправит постбек")
+        lines.insert(4, "/status — проверка работы бота и сервисов")
+    if not is_approved(user_id):
+        lines.insert(4, "/request\\_access — запросить доступ к боту")
     return "\n".join(lines)
 
 
@@ -161,61 +158,26 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await _run_status(update.message, update.effective_user.id)
 
 
-async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /addadmin <user_id> — добавить админа (только owner)."""
-    if not is_owner(update.effective_user.id):
-        await update.message.reply_text("⛔ Только владелец может добавлять админов.")
-        return
-    if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Использование: /addadmin <user\\_id>", parse_mode="Markdown")
-        return
-    uid = int(context.args[0])
-    if add_admin(uid):
-        await update.message.reply_text(f"✅ Пользователь `{uid}` добавлен как админ.", parse_mode="Markdown")
-    else:
-        await update.message.reply_text(f"ℹ️ Пользователь `{uid}` уже является админом.", parse_mode="Markdown")
-
-
-async def removeadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /removeadmin <user_id> — удалить админа (только owner)."""
-    if not is_owner(update.effective_user.id):
-        await update.message.reply_text("⛔ Только владелец может удалять админов.")
-        return
-    if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Использование: /removeadmin <user\\_id>", parse_mode="Markdown")
-        return
-    uid = int(context.args[0])
-    if remove_admin(uid):
-        await update.message.reply_text(f"✅ Пользователь `{uid}` удалён из админов.", parse_mode="Markdown")
-    else:
-        await update.message.reply_text(f"ℹ️ Невозможно удалить (owner или не найден).", parse_mode="Markdown")
-
-
-async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /admins — показать список админов (только админ)."""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ Эта команда доступна только администраторам.")
-        return
-    owner, admins = list_admins()
-    lines = []
-    for uid in admins:
-        role = " (owner)" if uid == owner else ""
-        lines.append(f"• `{uid}`{role}")
-    text = "👥 *Администраторы:*\n\n" + "\n".join(lines) if lines else "Список админов пуст."
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
 async def request_access_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /request_access — запрос доступа админа."""
+    """Команда /request_access — запрос доступа к боту."""
     user = update.effective_user
-    if is_admin(user.id):
-        await update.message.reply_text("ℹ️ Вы уже являетесь администратором.")
+    if is_approved(user.id):
+        await update.message.reply_text("ℹ️ У вас уже есть доступ к боту.")
+        return
+
+    can_request, used = can_request_access(user.id)
+    if not can_request:
+        await update.message.reply_text(
+            f"⛔ Лимит запросов исчерпан (3 в день). Использовано сегодня: {used}. Попробуйте завтра.",
+        )
         return
 
     owner_id = get_owner()
     if not owner_id:
         await update.message.reply_text("❌ Владелец бота не настроен.")
         return
+
+    log_request_access(user.id)
 
     name = user.full_name or "Без имени"
     username = f"@{user.username}" if user.username else "нет"
@@ -258,7 +220,7 @@ async def access_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     uid = int(data.split("_")[-1])
 
     if data.startswith("access_approve_"):
-        if add_admin(uid):
+        if add_approved(uid):
             await query.edit_message_text(
                 query.message.text + "\n\n✅ *Одобрено*",
                 parse_mode="Markdown",
@@ -266,14 +228,14 @@ async def access_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             try:
                 await context.bot.send_message(
                     chat_id=uid,
-                    text="🎉 Ваша заявка одобрена! Теперь у вас есть права администратора.\nОтправьте /start для обновления меню.",
+                    text="🎉 Ваша заявка одобрена! Теперь вы можете использовать бота.\nОтправьте /start для обновления меню.",
                 )
                 await _set_commands_for_user(context.bot, uid)
             except Exception:
                 pass
         else:
             await query.edit_message_text(
-                query.message.text + "\n\nℹ️ Уже является админом.",
+                query.message.text + "\n\nℹ️ Уже одобрен.",
                 parse_mode="Markdown",
             )
 
@@ -294,78 +256,12 @@ async def access_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 def _main_keyboard():
     """Клавиатура над полем ввода."""
     return ReplyKeyboardMarkup(
-        [[KeyboardButton(BTN_REG), KeyboardButton(BTN_DEPOSIT)]],
+        [
+            [KeyboardButton(BTN_REG), KeyboardButton(BTN_DEPOSIT)],
+            [KeyboardButton(BTN_START)],
+        ],
         resize_keyboard=True,
     )
-
-
-def _menu_inline_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Inline-кнопки команд в зависимости от роли."""
-    buttons = [
-        [InlineKeyboardButton("📖 Справка", callback_data="cmd_help")],
-    ]
-    if is_admin(user_id):
-        buttons.append([
-            InlineKeyboardButton("📊 Статус сервисов", callback_data="cmd_status"),
-            InlineKeyboardButton("👥 Список админов", callback_data="cmd_admins"),
-        ])
-    if is_owner(user_id):
-        buttons.append([
-            InlineKeyboardButton("➕ Добавить админа", callback_data="cmd_addadmin"),
-            InlineKeyboardButton("➖ Удалить админа", callback_data="cmd_removeadmin"),
-        ])
-    return InlineKeyboardMarkup(buttons)
-
-
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Кнопка 'Меню' — показать доступные команды."""
-    user_id = update.effective_user.id
-    await update.message.reply_text(
-        "📋 Выберите команду:",
-        reply_markup=_menu_inline_keyboard(user_id),
-    )
-
-
-async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработка нажатий inline-кнопок меню."""
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data == "cmd_help":
-        await query.message.reply_text(
-            _help_text(update.effective_user.id),
-            parse_mode="Markdown",
-        )
-    elif data == "cmd_status":
-        if not is_admin(update.effective_user.id):
-            await query.message.reply_text("⛔ Нет доступа.")
-            return
-        context.user_data["_from_menu"] = True
-        fake_update = update
-        fake_update._effective_message = query.message
-        await _run_status(query.message, update.effective_user.id)
-    elif data == "cmd_admins":
-        if not is_admin(update.effective_user.id):
-            await query.message.reply_text("⛔ Нет доступа.")
-            return
-        owner, admins_list = list_admins()
-        lines = []
-        for uid in admins_list:
-            role = " (owner)" if uid == owner else ""
-            lines.append(f"• `{uid}`{role}")
-        text = "👥 *Администраторы:*\n\n" + "\n".join(lines) if lines else "Список админов пуст."
-        await query.message.reply_text(text, parse_mode="Markdown")
-    elif data == "cmd_addadmin":
-        if not is_owner(update.effective_user.id):
-            await query.message.reply_text("⛔ Нет доступа.")
-            return
-        await query.message.reply_text("Отправьте команду:\n/addadmin <user\\_id>", parse_mode="Markdown")
-    elif data == "cmd_removeadmin":
-        if not is_owner(update.effective_user.id):
-            await query.message.reply_text("⛔ Нет доступа.")
-            return
-        await query.message.reply_text("Отправьте команду:\n/removeadmin <user\\_id>", parse_mode="Markdown")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -381,6 +277,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка нажатия кнопки (текст сообщения) - запрос ссылки."""
+    user_id = update.effective_user.id
+    if not is_approved(user_id):
+        await update.message.reply_text(
+            "⛔ Для использования бота необходимо получить доступ.\n\n"
+            "Отправьте /request_access и дождитесь одобрения владельца.",
+            reply_markup=_main_keyboard(),
+        )
+        return ConversationHandler.END
+
     text = (update.message.text or "").strip()
     context.user_data["action"] = CB_REG if text == BTN_REG else CB_DEPOSIT
     action_name = "тестовой регистрации" if text == BTN_REG else "тестового депозита"
@@ -522,18 +427,15 @@ def main() -> None:
         fallbacks=[
             CommandHandler("cancel", cancel),
             CommandHandler("start", start_in_conversation),
+            MessageHandler(filters.Text([BTN_START]), start_in_conversation),
         ],
     )
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("addadmin", addadmin_command))
-    application.add_handler(CommandHandler("removeadmin", removeadmin_command))
-    application.add_handler(CommandHandler("admins", admins_command))
     application.add_handler(CommandHandler("request_access", request_access_command))
-    application.add_handler(MessageHandler(filters.Text([BTN_MENU]), menu_handler))
-    application.add_handler(CallbackQueryHandler(menu_callback, pattern="^cmd_"))
+    application.add_handler(MessageHandler(filters.Text([BTN_START]), start))
     application.add_handler(CallbackQueryHandler(access_callback, pattern="^access_"))
     application.add_handler(conv_handler)
     

@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 *.db
 admins.json
+request_access_log.json
 .DS_Store
