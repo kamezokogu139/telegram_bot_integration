@@ -45,7 +45,7 @@ def _extract_clickid_from_url(url: str) -> str | None:
     explicit_names = [
         "clickid", "click_id", "cbid", "aff_click_id", "external_id",
         "stag", "utm_content", "partner_click_id", "subid", "afp1",
-        "sub_id1", "anid",
+        "sub_id1", "anid","s2s.req_id"
     ]
     for name in explicit_names:
         if name in params and params[name]:
