@@ -27,16 +27,21 @@ from postback_service import (
     extract_pid_from_url,
     get_offer_secure,
     send_postback,
+    build_postback_urls_for_advertiser,
 )
 from postback_logger import log_postback
 
 # Состояния для ConversationHandler
 AWAITING_LINK = 1
+AWAITING_OFFER_ID = 2
 
 # Текст кнопок (Reply Keyboard)
+BTN_START = "🔄 Главное меню"
 BTN_REG = "📝 Тестовая регистрация"
 BTN_DEPOSIT = "💰 Тестовый депозит"
-BTN_START = "🔄 Главное меню"
+BTN_CREATE_POSTBACKS = "📋 Создать постбеки"
+BTN_HELP = "📖 Справка"
+BTN_BACK = "⬅️ Назад"
 CB_REG = "test_reg"
 CB_DEPOSIT = "test_deposit"
 
@@ -50,10 +55,11 @@ logger = logging.getLogger(__name__)
 async def _set_commands_for_user(bot, user_id: int) -> None:
     """Устанавливает список команд в кнопке Меню для конкретного пользователя."""
     commands = [
-        BotCommand("start", "Главное меню"),
         BotCommand("help", "Справка"),
         BotCommand("cancel", "Отмена операции"),
     ]
+    if is_approved(user_id):
+        commands.append(BotCommand("postback_url", "URL постбеков для рекламодателя"))
     if is_owner(user_id):
         commands.append(BotCommand("status", "Статус сервисов"))
     if not is_approved(user_id):
@@ -67,7 +73,6 @@ async def _set_commands_for_user(bot, user_id: int) -> None:
 async def _set_default_commands(app: Application) -> None:
     """Устанавливает команды по умолчанию (для всех) при запуске бота."""
     commands = [
-        BotCommand("start", "Главное меню"),
         BotCommand("help", "Справка"),
         BotCommand("request_access", "Запросить доступ"),
         BotCommand("cancel", "Отмена операции"),
@@ -79,22 +84,29 @@ def _help_text(user_id: int) -> str:
     """Текст справки в зависимости от роли."""
     lines = [
         "📖 *Справка*\n",
-        "*Команды:*",
-        "/start — возврат в главное меню",
-        "/cancel — отмена текущей операции",
+        "*Бот:* тестирование постбеков X-Partners и формирование URL постбеков для рекламодателей.",
         "",
         "*Кнопки:*",
-        "📝 Тестовая регистрация — отправка постбека с goal=registration, status=1",
-        "💰 Тестовый депозит — отправка постбека с goal=deposit, status=2",
+        "📝 Тестовая регистрация — отправить тестовый постбек (goal=registration, status=1)",
+        "💰 Тестовый депозит — отправить тестовый постбек (goal=deposit, status=2)",
+        "📋 Создать постбеки — сформировать URL постбеков по offer_id для передачи рекламодателю",
+        "📖 Справка — эта подсказка",
         "",
-        "*Как пользоваться:*",
-        "1. Нажмите кнопку «📝 Тестовая регистрация» или «💰 Тестовый депозит»",
+        "В начале нажмите кнопку «Главное меню» под полем ввода.",
+        "",
+        "*Команды:*",
+        "/cancel — отмена текущей операции",
+        "",
+        "*Как отправить тестовый постбек:*",
+        "1. Нажмите «Тестовая регистрация» или «Тестовый депозит»",
         "2. Отправьте ссылку",
     ]
+    if is_approved(user_id):
+        lines.append("/postback\\_url <offer\\_id> — то же, что кнопка «Создать постбеки»")
     if is_owner(user_id):
-        lines.insert(4, "/status — проверка работы бота и сервисов")
+        lines.append("/status — проверка работы бота и сервисов")
     if not is_approved(user_id):
-        lines.insert(4, "/request\\_access — запросить доступ к боту")
+        lines.append("/request\\_access — запросить доступ к боту")
     return "\n".join(lines)
 
 
@@ -103,7 +115,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         _help_text(update.effective_user.id),
         parse_mode="Markdown",
-        reply_markup=_main_keyboard(),
+        reply_markup=_menu_keyboard(),
     )
 
 
@@ -150,6 +162,35 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⛔ Эта команда доступна только администраторам.")
         return
     await _run_status(update.message, update.effective_user.id)
+
+
+async def postback_url_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /postback_url <offer_id> — выдать URL постбеков для рекламодателя (clickid={adv_click_id})."""
+    if not is_approved(update.effective_user.id):
+        await update.message.reply_text("⛔ Для использования бота необходимо получить доступ.")
+        return
+    if not context.args or not context.args[0].strip():
+        await update.message.reply_text(
+            "Использование: /postback_url <offer_id>\n\nПример: /postback_url 4837",
+            parse_mode="Markdown",
+        )
+        return
+    offer_id = context.args[0].strip()
+    if not offer_id.isdigit():
+        await update.message.reply_text("❌ offer_id должен быть числом.")
+        return
+    await update.message.reply_text("⏳ Получаю secure по API...")
+    url_reg, url_dep, error = build_postback_urls_for_advertiser(offer_id, pid="108")
+    if error:
+        await update.message.reply_text(f"❌ {error}")
+        return
+    text = (
+        "📋 *Постбеки для рекламодателя* (offer_id={})\n\n"
+        "Рекламодатель подставляет: свой click_id вместо `{{adv_click_id}}`, id заявки/юзера вместо `{{id_заявки_id_юзера}}`.\n\n"
+        "*Регистрация:*\n`{}`\n\n"
+        "*Депозит:*\n`{}`"
+    ).format(offer_id, url_reg, url_dep)
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def request_access_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -247,26 +288,110 @@ async def access_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             pass
 
 
-def _main_keyboard():
-    """Клавиатура над полем ввода."""
+def _entry_keyboard():
+    """Клавиатура после /start — только «Главное меню»."""
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(BTN_START)]],
+        resize_keyboard=True,
+    )
+
+
+def _menu_keyboard():
+    """Клавиатура после нажатия «Главное меню» — 5 кнопок."""
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton(BTN_REG), KeyboardButton(BTN_DEPOSIT)],
-            [KeyboardButton(BTN_START)],
+            [KeyboardButton(BTN_CREATE_POSTBACKS)],
+            [KeyboardButton(BTN_HELP)],
+            [KeyboardButton(BTN_BACK)],
         ],
         resize_keyboard=True,
     )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /start - приветствие и кнопки над полем ввода."""
+    """Команда /start — приветствие и кнопка «Главное меню»."""
     user_id = update.effective_user.id
     await _set_commands_for_user(context.bot, user_id)
     await update.message.reply_text(
-        "👋 Привет! Это бот для тестирования X-Partners!\n\n"
-        "Выберите действие:",
-        reply_markup=_main_keyboard(),
+        "👋 Привет! Это бот для тестирования X-Partners.\n\n"
+        "Нажмите «Главное меню», чтобы продолжить.",
+        reply_markup=_entry_keyboard(),
     )
+
+
+async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показать меню с кнопками (после нажатия «Главное меню»)."""
+    await update.message.reply_text(
+        "Выберите действие:",
+        reply_markup=_menu_keyboard(),
+    )
+
+
+async def back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Кнопка «Назад» — вернуться на экран с кнопкой «Главное меню»."""
+    await update.message.reply_text(
+        "Нажмите «Главное меню», чтобы продолжить.",
+        reply_markup=_entry_keyboard(),
+    )
+
+
+async def back_handler_and_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """«Назад» во время диалога — вернуться на главный экран и завершить диалог."""
+    await back_handler(update, context)
+    return ConversationHandler.END
+
+
+async def show_menu_and_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показать меню и завершить диалог (для fallback в ConversationHandler)."""
+    await show_menu(update, context)
+    return ConversationHandler.END
+
+
+async def help_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Кнопка «Справка» — краткая информация по командам и боту."""
+    await update.message.reply_text(
+        _help_text(update.effective_user.id),
+        parse_mode="Markdown",
+        reply_markup=_menu_keyboard(),
+    )
+
+
+async def create_postbacks_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Кнопка «Создать постбеки» — запрос offer_id."""
+    if not is_approved(update.effective_user.id):
+        await update.message.reply_text(
+            "⛔ Для использования бота необходимо получить доступ.",
+            reply_markup=_menu_keyboard(),
+        )
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "Введите offer_id (число):\n\nИли /cancel для отмены.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return AWAITING_OFFER_ID
+
+
+async def create_postbacks_offer_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка введённого offer_id для «Создать постбеки»."""
+    text = (update.message.text or "").strip()
+    if not text or not text.isdigit():
+        await update.message.reply_text("❌ Введите число (offer_id).")
+        return AWAITING_OFFER_ID
+    offer_id = text
+    await update.message.reply_text("⏳ Получаю secure по API...")
+    url_reg, url_dep, error = build_postback_urls_for_advertiser(offer_id, pid="108")
+    if error:
+        await update.message.reply_text(f"❌ {error}", reply_markup=_menu_keyboard())
+        return ConversationHandler.END
+    resp_text = (
+        "📋 *Постбеки для рекламодателя* (offer_id={})\n\n"
+        "Рекламодатель подставляет: свой click_id вместо `{{adv_click_id}}`, id заявки/юзера вместо `{{id_заявки_id_юзера}}`.\n\n"
+        "*Регистрация:*\n`{}`\n\n"
+        "*Депозит:*\n`{}`"
+    ).format(offer_id, url_reg, url_dep)
+    await update.message.reply_text(resp_text, parse_mode="Markdown", reply_markup=_menu_keyboard())
+    return ConversationHandler.END
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -276,7 +401,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(
             "⛔ Для использования бота необходимо получить доступ.\n\n"
             "Отправьте /request_access и дождитесь одобрения владельца.",
-            reply_markup=_main_keyboard(),
+            reply_markup=_menu_keyboard(),
         )
         return ConversationHandler.END
 
@@ -368,7 +493,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         except Exception as e:
             logger.warning("Не удалось записать лог постбека: %s", e)
 
-        keyboard = _main_keyboard()
+        keyboard = _menu_keyboard()
         if success:
             await update.message.reply_text(
                 f"🎉 {message}\n\n"
@@ -388,14 +513,14 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         logger.exception("Ошибка при обработке ссылки")
         await update.message.reply_text(
             f"❌ Произошла ошибка: {str(e)}\n\nПопробуйте /start и отправьте ссылку снова.",
-            reply_markup=_main_keyboard(),
+            reply_markup=_menu_keyboard(),
         )
         return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отмена операции."""
-    await update.message.reply_text("Операция отменена.", reply_markup=_main_keyboard())
+    await update.message.reply_text("Операция отменена.", reply_markup=_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -421,17 +546,39 @@ def main() -> None:
         fallbacks=[
             CommandHandler("cancel", cancel),
             CommandHandler("start", start_in_conversation),
-            MessageHandler(filters.Text([BTN_START]), start_in_conversation),
+            MessageHandler(filters.Text([BTN_START]), show_menu_and_end),
+            MessageHandler(filters.Text([BTN_BACK]), back_handler_and_end),
+        ],
+    )
+
+    conv_create_postbacks = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Text([BTN_CREATE_POSTBACKS]), create_postbacks_start),
+        ],
+        states={
+            AWAITING_OFFER_ID: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, create_postbacks_offer_id),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", start_in_conversation),
+            MessageHandler(filters.Text([BTN_START]), show_menu_and_end),
+            MessageHandler(filters.Text([BTN_BACK]), back_handler_and_end),
         ],
     )
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("postback_url", postback_url_command))
     application.add_handler(CommandHandler("request_access", request_access_command))
-    application.add_handler(MessageHandler(filters.Text([BTN_START]), start))
+    application.add_handler(MessageHandler(filters.Text([BTN_START]), show_menu))
+    application.add_handler(MessageHandler(filters.Text([BTN_HELP]), help_button_handler))
+    application.add_handler(MessageHandler(filters.Text([BTN_BACK]), back_handler))
     application.add_handler(CallbackQueryHandler(access_callback, pattern="^access_"))
     application.add_handler(conv_handler)
+    application.add_handler(conv_create_postbacks)
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
