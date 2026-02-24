@@ -186,7 +186,7 @@ async def postback_url_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     text = (
         "📋 *Постбеки для рекламодателя* (offer_id={})\n\n"
-        "Рекламодатель подставляет: свой click_id вместо `{{adv_click_id}}`, id заявки/юзера вместо `{{id_заявки_id_юзера}}`.\n\n"
+        "Рекламодатель подставляет свой click_id вместо `{{adv_click_id}}`.\n\n"
         "*Регистрация:*\n`{}`\n\n"
         "*Депозит:*\n`{}`"
     ).format(offer_id, url_reg, url_dep)
@@ -386,7 +386,7 @@ async def create_postbacks_offer_id(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
     resp_text = (
         "📋 *Постбеки для рекламодателя* (offer_id={})\n\n"
-        "Рекламодатель подставляет: свой click_id вместо `{{adv_click_id}}`, id заявки/юзера вместо `{{id_заявки_id_юзера}}`.\n\n"
+        "Рекламодатель подставляет свой click_id вместо `{{adv_click_id}}`.\n\n"
         "*Регистрация:*\n`{}`\n\n"
         "*Депозит:*\n`{}`"
     ).format(offer_id, url_reg, url_dep)

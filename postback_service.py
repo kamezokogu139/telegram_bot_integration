@@ -272,14 +272,14 @@ def send_postback(clickid: str, secure: str, goal: str, status: int, pid: str = 
 def build_postback_urls_for_advertiser(offer_id: str, pid: str = "108") -> tuple[str | None, str | None, str]:
     """
     Собирает URL постбеков для передачи рекламодателю.
-    clickid={adv_click_id}, action_id={id_заявки_id_юзера} — рекламодатель подставляет свои значения.
+    clickid={adv_click_id} — рекламодатель подставляет свой click_id.
     Returns:
         (url_registration, url_deposit, error_message)
     """
     secure, error = get_offer_secure(offer_id)
     if not secure:
         return None, None, error or "Не удалось получить secure"
-    base = f"{POSTBACK_BASE_URL}?clickid={{adv_click_id}}&secure={secure}&action_id={{id_заявки_id_юзера}}"
+    base = f"{POSTBACK_BASE_URL}?clickid={{adv_click_id}}&secure={secure}"
     url_reg = f"{base}&goal=registration&status=1"
     url_dep = f"{base}&goal=deposit&status=2"
     return url_reg, url_dep, ""
