@@ -20,7 +20,7 @@ from telegram.ext import (
 import httpx
 
 from config import TELEGRAM_BOT_TOKEN, AFFISE_API_URL, AFFISE_API_KEY, PROXY_URL, TRACKER_DOMAINS
-from admin_service import is_admin, is_owner, get_owner, is_approved, add_approved, can_request_access, log_request_access
+from admin_service import is_admin, is_owner, get_owner, is_approved, add_approved, can_request_access, log_request_access, get_users_with_access
 from postback_service import (
     extract_clickid_from_redirect,
     extract_offer_id_from_url,
@@ -62,6 +62,7 @@ async def _set_commands_for_user(bot, user_id: int) -> None:
         commands.append(BotCommand("postback_url", "URL постбеков для рекламодателя"))
     if is_owner(user_id):
         commands.append(BotCommand("status", "Статус сервисов"))
+        commands.append(BotCommand("users", "Список пользователей с доступом"))
     if not is_approved(user_id):
         commands.append(BotCommand("request_access", "Запросить доступ"))
     try:
@@ -105,6 +106,7 @@ def _help_text(user_id: int) -> str:
         lines.append("/postback\\_url <offer\\_id> — то же, что кнопка «Создать постбеки»")
     if is_owner(user_id):
         lines.append("/status — проверка работы бота и сервисов")
+        lines.append("/users — список пользователей с доступом к боту")
     if not is_approved(user_id):
         lines.append("/request\\_access — запросить доступ к боту")
     return "\n".join(lines)
@@ -162,6 +164,45 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⛔ Эта команда доступна только администраторам.")
         return
     await _run_status(update.message, update.effective_user.id)
+
+
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /users — список пользователей с доступом к боту (только админ)."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Эта команда доступна только администраторам.")
+        return
+
+    data = get_users_with_access()
+    owner_id = data.get("owner")
+    approved = data.get("approved", [])
+
+    lines = ["👥 *Пользователи с доступом к боту*\n"]
+
+    if owner_id:
+        try:
+            chat = await context.bot.get_chat(owner_id)
+            name = chat.full_name or "—"
+            username = f"@{chat.username}" if chat.username else "—"
+            lines.append(f"*Владелец (админ):*\n  • ID: `{owner_id}`\n  • Имя: {name}\n  • Username: {username}\n")
+        except Exception:
+            lines.append(f"*Владелец (админ):* ID `{owner_id}`\n")
+    else:
+        lines.append("*Владелец:* не настроен\n")
+
+    if approved:
+        lines.append("*Одобренные пользователи:*")
+        for uid in approved:
+            try:
+                chat = await context.bot.get_chat(uid)
+                name = chat.full_name or "—"
+                username = f"@{chat.username}" if chat.username else "—"
+                lines.append(f"  • ID `{uid}` — {name} ({username})")
+            except Exception:
+                lines.append(f"  • ID `{uid}`")
+    else:
+        lines.append("*Одобренные пользователи:* нет")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def postback_url_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -571,6 +612,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("postback_url", postback_url_command))
     application.add_handler(CommandHandler("request_access", request_access_command))
     application.add_handler(MessageHandler(filters.Text([BTN_START]), show_menu))

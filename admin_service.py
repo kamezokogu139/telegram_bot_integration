@@ -33,6 +33,15 @@ def get_owner() -> int | None:
     return _read().get("owner")
 
 
+def get_users_with_access() -> dict:
+    """Возвращает {'owner': user_id, 'approved': [user_ids]} — все, у кого есть доступ."""
+    data = _read()
+    return {
+        "owner": data.get("owner"),
+        "approved": data.get("approved", []),
+    }
+
+
 def is_owner(user_id: int) -> bool:
     return _read().get("owner") == user_id
 
