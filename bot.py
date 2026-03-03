@@ -26,6 +26,7 @@ from postback_service import (
     extract_offer_id_from_url,
     extract_pid_from_url,
     get_offer_secure,
+    get_offer_links,
     send_postback,
     build_postback_urls_for_advertiser,
 )
@@ -34,12 +35,14 @@ from postback_logger import log_postback
 # Состояния для ConversationHandler
 AWAITING_LINK = 1
 AWAITING_OFFER_ID = 2
+AWAITING_OFFER_PID = 3
 
 # Текст кнопок (Reply Keyboard)
 BTN_START = "🔄 Главное меню"
 BTN_REG = "📝 Тестовая регистрация"
 BTN_DEPOSIT = "💰 Тестовый депозит"
 BTN_CREATE_POSTBACKS = "📋 Создать постбеки"
+BTN_GET_LINKS = "🔗 Получить ссылки"
 BTN_HELP = "📖 Справка"
 BTN_BACK = "⬅️ Назад"
 CB_REG = "test_reg"
@@ -91,6 +94,7 @@ def _help_text(user_id: int) -> str:
         "📝 Тестовая регистрация — отправить тестовый постбек (goal=registration, status=1)",
         "💰 Тестовый депозит — отправить тестовый постбек (goal=deposit, status=2)",
         "📋 Создать постбеки — сформировать URL постбеков по offer_id для передачи рекламодателю",
+        "🔗 Получить ссылки — трекинг-ссылка и лендинги оффера для вебмастера",
         "📖 Справка — эта подсказка",
         "",
         "В начале нажмите кнопку «Главное меню» под полем ввода.",
@@ -338,11 +342,11 @@ def _entry_keyboard():
 
 
 def _menu_keyboard():
-    """Клавиатура после нажатия «Главное меню» — 5 кнопок."""
+    """Клавиатура после нажатия «Главное меню» — 6 кнопок."""
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton(BTN_REG), KeyboardButton(BTN_DEPOSIT)],
-            [KeyboardButton(BTN_CREATE_POSTBACKS)],
+            [KeyboardButton(BTN_CREATE_POSTBACKS), KeyboardButton(BTN_GET_LINKS)],
             [KeyboardButton(BTN_HELP)],
             [KeyboardButton(BTN_BACK)],
         ],
@@ -432,6 +436,69 @@ async def create_postbacks_offer_id(update: Update, context: ContextTypes.DEFAUL
         "*Депозит:*\n`{}`"
     ).format(offer_id, url_reg, url_dep)
     await update.message.reply_text(resp_text, parse_mode="Markdown", reply_markup=_menu_keyboard())
+    return ConversationHandler.END
+
+
+async def get_links_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Кнопка «Получить ссылки» — запрос offer_id и pid."""
+    if not is_approved(update.effective_user.id):
+        await update.message.reply_text(
+            "⛔ Для использования бота необходимо получить доступ.",
+            reply_markup=_menu_keyboard(),
+        )
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "Введите *offer_id* и *pid* через пробел.\n\n"
+        "Подсказка: `offer_id pid`\n"
+        "Пример: `1234 108`\n\n"
+        "Или /cancel для отмены.",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return AWAITING_OFFER_PID
+
+
+async def get_links_offer_pid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка введённых offer_id и pid для «Получить ссылки»."""
+    text = (update.message.text or "").strip()
+    parts = text.split()
+    if len(parts) != 2:
+        await update.message.reply_text(
+            "❌ Введите два числа через пробел: offer_id pid\n"
+            "Пример: 1234 108"
+        )
+        return AWAITING_OFFER_PID
+    offer_id, pid = parts[0], parts[1]
+    if not offer_id.isdigit() or not pid.isdigit():
+        await update.message.reply_text("❌ Оба значения должны быть числами (offer_id pid).")
+        return AWAITING_OFFER_PID
+
+    await update.message.reply_text("⏳ Получаю данные по API...")
+    tracking_url, landings, error = get_offer_links(offer_id, pid)
+    if error:
+        await update.message.reply_text(f"❌ {error}", reply_markup=_menu_keyboard())
+        return ConversationHandler.END
+
+    lines = [
+        f"🔗 *Трекинг-ссылка* (offer_id={offer_id}, pid={pid}):",
+        f"`{tracking_url}`",
+        "",
+    ]
+    if landings:
+        lines.append("📄 *Лендинги:*")
+        for i, lnd in enumerate(landings, 1):
+            title = lnd.get("title") or f"Лендинг {i}"
+            url = lnd.get("url") or lnd.get("url_preview") or "—"
+            lines.append(f"{i}. {title}")
+            lines.append(f"   `{url}`")
+    else:
+        lines.append("📄 *Лендинги:* нет")
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=_menu_keyboard(),
+    )
     return ConversationHandler.END
 
 
@@ -608,6 +675,23 @@ def main() -> None:
             MessageHandler(filters.Text([BTN_BACK]), back_handler_and_end),
         ],
     )
+
+    conv_get_links = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Text([BTN_GET_LINKS]), get_links_start),
+        ],
+        states={
+            AWAITING_OFFER_PID: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_links_offer_pid),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", start_in_conversation),
+            MessageHandler(filters.Text([BTN_START]), show_menu_and_end),
+            MessageHandler(filters.Text([BTN_BACK]), back_handler_and_end),
+        ],
+    )
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
@@ -621,6 +705,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(access_callback, pattern="^access_"))
     application.add_handler(conv_handler)
     application.add_handler(conv_create_postbacks)
+    application.add_handler(conv_get_links)
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 

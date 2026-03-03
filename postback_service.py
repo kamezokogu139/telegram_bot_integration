@@ -5,7 +5,7 @@ from urllib.parse import urlparse, parse_qs, urljoin
 
 import httpx
 
-from config import AFFISE_API_URL, AFFISE_API_KEY, POSTBACK_BASE_URL, REQUEST_TIMEOUT, PROXY_URL, TRACKER_DOMAINS
+from config import AFFISE_API_URL, AFFISE_API_KEY, POSTBACK_BASE_URL, REQUEST_TIMEOUT, PROXY_URL, TRACKER_DOMAINS, TRACKING_CLICK_BASE
 
 
 def _is_tracker_url(url: str) -> bool:
@@ -267,6 +267,68 @@ def send_postback(clickid: str, secure: str, goal: str, status: int, pid: str = 
             
     except Exception as e:
         return False, f"Ошибка отправки: {str(e)}"
+
+
+def get_offer_links(offer_id: str, pid: str) -> tuple[str | None, list[dict], str]:
+    """
+    Получает трекинг-ссылку и лендинги оффера для вебмастера из Affise API.
+    
+    Args:
+        offer_id: ID оффера (число или строка)
+        pid: ID вебмастера (partner/affiliate id)
+    
+    Returns:
+        (tracking_url, landings_list, error_message)
+        landings_list — список dict с ключами: id, title, url, url_preview, type
+    """
+    url = f"{AFFISE_API_URL}/3.0/offer/{offer_id}"
+    headers = {"API-Key": AFFISE_API_KEY}
+    
+    try:
+        with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
+            response = client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+        if data.get("status") != 1:
+            return None, [], "API вернул неожиданный статус"
+        
+        offer = data.get("offer", {})
+        internal_id = offer.get("id") or offer_id
+        landings_raw = offer.get("landings") or []
+
+        # Домен трекинг-ссылки берём из API: tracking_domain или domain_url
+        domain = (offer.get("tracking_domain") or offer.get("domain_url") or "").strip()
+        use_https = bool(offer.get("use_https", True))
+        if domain:
+            domain = domain.replace("https://", "").replace("http://", "").rstrip("/")
+            scheme = "https" if use_https else "http"
+            base = f"{scheme}://{domain}"
+        else:
+            base = TRACKING_CLICK_BASE.rstrip("/")
+        tracking_url = f"{base}/click?pid={pid}&offer_id={internal_id}"
+        
+        landings = []
+        for L in landings_raw:
+            if isinstance(L, dict):
+                landings.append({
+                    "id": L.get("id"),
+                    "title": L.get("title") or L.get("name") or "—",
+                    "url": L.get("url") or "",
+                    "url_preview": L.get("url_preview") or L.get("url") or "",
+                    "type": L.get("type") or "landing",
+                })
+        
+        return tracking_url, landings, ""
+        
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None, [], f"Оффер {offer_id} не найден"
+        return None, [], f"Ошибка API: {e.response.status_code}"
+    except httpx.RequestError as e:
+        return None, [], f"Ошибка подключения к API: {str(e)}"
+    except Exception as e:
+        return None, [], f"Ошибка: {str(e)}"
 
 
 def build_postback_urls_for_advertiser(offer_id: str, pid: str = "108") -> tuple[str | None, str | None, str]:

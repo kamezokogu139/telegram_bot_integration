@@ -26,6 +26,9 @@ REQUEST_TIMEOUT = 30
 # Если не задан — ссылки открываются напрямую
 PROXY_URL = os.getenv("PROXY_URL", "").strip() or None
 
+# Базовый URL для трекинг-ссылок (click). Используется для формирования ссылок вида /click?pid=X&offer_id=Y
+TRACKING_CLICK_BASE = os.getenv("TRACKING_CLICK_BASE", "https://trk.xplink")
+
 # Домены трекеров: click_id в следующем редиректе после этих доменов, offer_id и pid — из URL этих доменов
 TRACKER_DOMAINS = [
     "trk.xplink",
