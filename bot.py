@@ -4,6 +4,7 @@ Telegram бот для отправки тестовых постбеков X-Pa
 1. Тестовая регистрация
 2. Тестовый депозит
 """
+import asyncio
 import logging
 
 from telegram import BotCommand, BotCommandScopeChat, Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
@@ -449,7 +450,6 @@ async def get_links_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
     await update.message.reply_text(
         "Введите *offer_id* и *pid* через пробел.\n\n"
-        "Подсказка: `offer_id pid`\n"
         "Пример: `1234 108`\n\n"
         "Или /cancel для отмены.",
         parse_mode="Markdown",
@@ -473,8 +473,8 @@ async def get_links_offer_pid(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Оба значения должны быть числами (offer_id pid).")
         return AWAITING_OFFER_PID
 
-    await update.message.reply_text("⏳ Получаю данные по API...")
-    tracking_url, landings, error = get_offer_links(offer_id, pid)
+    await update.message.reply_text("⏳ Получаю ссылки")
+    tracking_url, landings, error = await asyncio.to_thread(get_offer_links, offer_id, pid)
     if error:
         await update.message.reply_text(f"❌ {error}", reply_markup=_menu_keyboard())
         return ConversationHandler.END

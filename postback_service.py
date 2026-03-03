@@ -283,9 +283,12 @@ def get_offer_links(offer_id: str, pid: str) -> tuple[str | None, list[dict], st
     """
     url = f"{AFFISE_API_URL}/3.0/offer/{offer_id}"
     headers = {"API-Key": AFFISE_API_KEY}
-    
+    client_kwargs: dict = {"timeout": REQUEST_TIMEOUT}
+    if PROXY_URL:
+        client_kwargs["proxy"] = PROXY_URL
+
     try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
+        with httpx.Client(**client_kwargs) as client:
             response = client.get(url, headers=headers)
             response.raise_for_status()
             data = response.json()
