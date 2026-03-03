@@ -480,25 +480,33 @@ async def get_links_offer_pid(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ConversationHandler.END
 
     lines = [
-        f"🔗 *Трекинг-ссылка* (offer_id={offer_id}, pid={pid}):",
-        f"`{tracking_url}`",
+        f"🔗 <b>Трекинг-ссылка</b> (offer_id={offer_id}, pid={pid}):",
+        f"<code>{tracking_url}</code>",
         "",
     ]
     if landings:
-        lines.append("📄 *Лендинги:*")
+        lines.append("📄 <b>Лендинги:</b>")
         for i, lnd in enumerate(landings, 1):
-            title = lnd.get("title") or f"Лендинг {i}"
+            title = (lnd.get("title") or f"Лендинг {i}").replace("<", "&lt;").replace(">", "&gt;")
             url = lnd.get("url") or lnd.get("url_preview") or "—"
             lines.append(f"{i}. {title}")
-            lines.append(f"   `{url}`")
+            lines.append(f"   <code>{url}</code>")
     else:
-        lines.append("📄 *Лендинги:* нет")
+        lines.append("📄 <b>Лендинги:</b> нет")
 
-    await update.message.reply_text(
-        "\n".join(lines),
-        parse_mode="Markdown",
-        reply_markup=_menu_keyboard(),
-    )
+    try:
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=_menu_keyboard(),
+        )
+    except Exception as e:
+        logger.exception("Ошибка при отправке ссылок")
+        await update.message.reply_text(
+            f"🔗 Трекинг-ссылка:\n{tracking_url}\n\n"
+            + ("📄 Лендинги: нет" if not landings else "📄 Лендинги отправлены отдельно"),
+            reply_markup=_menu_keyboard(),
+        )
     return ConversationHandler.END
 
 
