@@ -292,7 +292,7 @@ def get_offer_links(offer_id: str, pid: str) -> tuple[str | None, list[dict], st
             response = client.get(url, headers=headers)
             response.raise_for_status()
             data = response.json()
-            
+
         if data.get("status") != 1:
             return None, [], "API вернул неожиданный статус"
         
@@ -314,10 +314,13 @@ def get_offer_links(offer_id: str, pid: str) -> tuple[str | None, list[dict], st
         landings = []
         for L in landings_raw:
             if isinstance(L, dict):
+                lnd_id = L.get("id")
+                if lnd_id is None:
+                    continue  # без id — лендинга нет, не включаем
                 landings.append({
-                    "id": L.get("id"),
+                    "id": lnd_id,
                     "title": L.get("title") or L.get("name") or "—",
-                    "url": L.get("url") or "",
+                    "url": f"{base}/click?pid={pid}&offer_id={internal_id}&l={lnd_id}",
                     "url_preview": L.get("url_preview") or L.get("url") or "",
                     "type": L.get("type") or "landing",
                 })
