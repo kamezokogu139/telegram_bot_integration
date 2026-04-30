@@ -553,7 +553,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text("⏳ Обрабатываю ссылку...")
 
         # 1. Извлекаем clickid, offer_id и pid из редиректа
-        clickid, offer_id, pid, error = extract_clickid_from_redirect(link)
+        clickid, offer_id, pid, error = await asyncio.to_thread(extract_clickid_from_redirect, link)
 
         if error and not clickid:
             await update.message.reply_text(f"❌ {error}")
@@ -576,7 +576,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
 
         # 2. Получаем secure из Affise API
-        secure, error = get_offer_secure(offer_id)
+        secure, error = await asyncio.to_thread(get_offer_secure, offer_id)
 
         if not secure:
             await update.message.reply_text(f"❌ {error}")
@@ -590,7 +590,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             goal = "deposit"
             status = 2
 
-        success, message = send_postback(clickid, secure, goal, status, pid)
+        success, message = await asyncio.to_thread(send_postback, clickid, secure, goal, status, pid)
 
         user = update.effective_user
         try:
