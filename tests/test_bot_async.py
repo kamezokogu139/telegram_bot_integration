@@ -52,9 +52,9 @@ class ProcessLinkAsyncTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(bot.asyncio, "to_thread", side_effect=fake_to_thread),
-            patch.object(bot, "extract_clickid_from_redirect", side_effect=fake_extract),
-            patch.object(bot, "get_offer_secure", side_effect=fake_secure),
-            patch.object(bot, "send_postback", side_effect=fake_send),
+            patch.object(bot, "extract_clickid_from_redirect", new=fake_extract),
+            patch.object(bot, "get_offer_secure", new=fake_secure),
+            patch.object(bot, "send_postback", new=fake_send),
             patch.object(bot, "log_postback"),
         ):
             await bot.process_link(update, context)
