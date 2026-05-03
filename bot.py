@@ -130,32 +130,38 @@ async def _run_status(message, user_id: int) -> None:
     """Логика проверки статуса (общая для команды и меню)."""
     await message.reply_text("⏳ Проверяю сервисы...")
     lines = []
-    try:
-        with httpx.Client(timeout=10) as client:
-            resp = client.get(
-                f"{AFFISE_API_URL}/3.0/offers",
-                headers={"API-Key": AFFISE_API_KEY},
-                params={"limit": 1},
-            )
-        if resp.status_code == 200:
-            lines.append("✅ Affise API — доступен")
-        else:
-            lines.append(f"⚠️ Affise API — HTTP {resp.status_code}")
-    except Exception as e:
-        lines.append(f"❌ Affise API — недоступен ({e})")
-    if PROXY_URL:
+
+    def check_services() -> list[str]:
+        result = []
         try:
-            with httpx.Client(proxy=PROXY_URL, timeout=10) as client:
-                resp = client.get("https://httpbin.org/ip")
+            with httpx.Client(timeout=10) as client:
+                resp = client.get(
+                    f"{AFFISE_API_URL}/3.0/offers",
+                    headers={"API-Key": AFFISE_API_KEY},
+                    params={"limit": 1},
+                )
             if resp.status_code == 200:
-                ip = resp.json().get("origin", "?")
-                lines.append(f"✅ Прокси — работает (IP: {ip})")
+                result.append("✅ Affise API — доступен")
             else:
-                lines.append(f"⚠️ Прокси — HTTP {resp.status_code}")
+                result.append(f"⚠️ Affise API — HTTP {resp.status_code}")
         except Exception as e:
-            lines.append(f"❌ Прокси — недоступен ({e})")
-    else:
-        lines.append("ℹ️ Прокси — не настроен")
+            result.append(f"❌ Affise API — недоступен ({e})")
+        if PROXY_URL:
+            try:
+                with httpx.Client(proxy=PROXY_URL, timeout=10) as client:
+                    resp = client.get("https://httpbin.org/ip")
+                if resp.status_code == 200:
+                    ip = resp.json().get("origin", "?")
+                    result.append(f"✅ Прокси — работает (IP: {ip})")
+                else:
+                    result.append(f"⚠️ Прокси — HTTP {resp.status_code}")
+            except Exception as e:
+                result.append(f"❌ Прокси — недоступен ({e})")
+        else:
+            result.append("ℹ️ Прокси — не настроен")
+        return result
+
+    lines.extend(await asyncio.to_thread(check_services))
     lines.append(f"ℹ️ Домены трекеров: {', '.join(TRACKER_DOMAINS)}")
     await message.reply_text(
         "📊 *Статус сервисов*\n\n" + "\n".join(lines),
@@ -226,7 +232,7 @@ async def postback_url_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ offer_id должен быть числом.")
         return
     await update.message.reply_text("⏳ Получаю secure по API...")
-    url_reg, url_dep, error = build_postback_urls_for_advertiser(offer_id, pid="108")
+    url_reg, url_dep, error = await asyncio.to_thread(build_postback_urls_for_advertiser, offer_id, "108")
     if error:
         await update.message.reply_text(f"❌ {error}")
         return
@@ -426,7 +432,7 @@ async def create_postbacks_offer_id(update: Update, context: ContextTypes.DEFAUL
         return AWAITING_OFFER_ID
     offer_id = text
     await update.message.reply_text("⏳ Получаю secure по API...")
-    url_reg, url_dep, error = build_postback_urls_for_advertiser(offer_id, pid="108")
+    url_reg, url_dep, error = await asyncio.to_thread(build_postback_urls_for_advertiser, offer_id, "108")
     if error:
         await update.message.reply_text(f"❌ {error}", reply_markup=_menu_keyboard())
         return ConversationHandler.END
@@ -553,7 +559,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text("⏳ Обрабатываю ссылку...")
 
         # 1. Извлекаем clickid, offer_id и pid из редиректа
-        clickid, offer_id, pid, error = extract_clickid_from_redirect(link)
+        clickid, offer_id, pid, error = await asyncio.to_thread(extract_clickid_from_redirect, link)
 
         if error and not clickid:
             await update.message.reply_text(f"❌ {error}")
@@ -576,7 +582,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
 
         # 2. Получаем secure из Affise API
-        secure, error = get_offer_secure(offer_id)
+        secure, error = await asyncio.to_thread(get_offer_secure, offer_id)
 
         if not secure:
             await update.message.reply_text(f"❌ {error}")
@@ -590,7 +596,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             goal = "deposit"
             status = 2
 
-        success, message = send_postback(clickid, secure, goal, status, pid)
+        success, message = await asyncio.to_thread(send_postback, clickid, secure, goal, status, pid)
 
         user = update.effective_user
         try:
