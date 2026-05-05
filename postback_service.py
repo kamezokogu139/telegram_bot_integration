@@ -106,8 +106,7 @@ def extract_clickid_from_redirect(affiliate_url: str) -> tuple[str | None, str |
 
             if not clickid:
                 return None, None, None, (
-                    "ClickID не найден в редиректе после трекера. "
-                    "Ожидается параметр clickid, click_id, sub1 и т.п. на следующей после trk.xplink странице."
+                    "ClickID не найден в редиректе X-partners. "
                 )
             
             # Извлекаем offer_id и pid только из URL трекера (TRACKER_DOMAINS)
@@ -234,6 +233,89 @@ def get_offer_secure(offer_id: str) -> tuple[str | None, str]:
         return None, f"Ошибка подключения к API: {str(e)}"
     except Exception as e:
         return None, f"Ошибка: {str(e)}"
+
+
+def _parse_offer_goals(offer: dict) -> list[dict]:
+    """
+    Извлекает список целей оффера из ответа Affise API.
+    Возвращает список dict с ключами: id, title, value.
+
+    value — то, что подставляется в параметр goal постбека.
+    Affise может называть это поле по-разному, поэтому пробуем
+    несколько вариантов в порядке приоритета.
+    """
+    result: list[dict] = []
+    seen_values: set[str] = set()
+
+    # Источник целей только payments.
+    raw_payments = offer.get("payments") or []
+    for idx, payment in enumerate(raw_payments):
+        if not isinstance(payment, dict):
+            continue
+        payment_goal = payment.get("goal")
+        if payment_goal is None:
+            continue
+        value_str = str(payment_goal).strip()
+        if not value_str or value_str in seen_values:
+            continue
+
+        payment_title = payment.get("title") or payment.get("name") or f"Payment goal {value_str}"
+        payment_goal_id = payment.get("goal_id")
+        if payment_goal_id is not None:
+            gid = f"payment-{payment_goal_id}-{idx}"
+        else:
+            gid = f"payment-{idx}"
+
+        result.append({
+            "id": str(gid),
+            "title": str(payment_title),
+            "value": value_str,
+        })
+        seen_values.add(value_str)
+    return result
+
+
+def get_offer_details(offer_id: str) -> tuple[str | None, list[dict], str]:
+    """
+    Получает данные оффера из Affise API за один вызов:
+    secure (hash_password) + список целей (goals).
+
+    Returns:
+        tuple: (secure, goals, error_message)
+            goals — list[{"id": str, "title": str, "value": str}]
+    """
+    url = f"{AFFISE_API_URL}/3.0/offer/{offer_id}"
+    headers = {"API-Key": AFFISE_API_KEY}
+
+    try:
+        with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
+            response = client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+        if data.get("status") != 1:
+            return None, [], "API вернул неожиданный статус"
+
+        offer = data.get("offer", {})
+        secure = offer.get("hash_password") or offer.get("secure")
+
+        if not secure:
+            return None, [], "У оффера не настроен secure (hash_password). Обратитесь к менеджеру."
+
+        goals = _parse_offer_goals(offer)
+        if not goals:
+            return str(secure), [], "У оффера не настроены цели в Affise"
+
+        return str(secure), goals, ""
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None, [], f"Оффер {offer_id} не найден"
+        return None, [], f"Ошибка API: {e.response.status_code}"
+    except httpx.RequestError as e:
+        return None, [], f"Ошибка подключения к API: {str(e)}"
+    except Exception as e:
+        return None, [], f"Ошибка: {str(e)}"
 
 
 def send_postback(clickid: str, secure: str, goal: str, status: int, pid: str = "") -> tuple[bool, str]:

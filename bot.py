@@ -27,6 +27,7 @@ from postback_service import (
     extract_offer_id_from_url,
     extract_pid_from_url,
     get_offer_secure,
+    get_offer_details,
     get_offer_links,
     send_postback,
     build_postback_urls_for_advertiser,
@@ -40,14 +41,13 @@ AWAITING_OFFER_PID = 3
 
 # Текст кнопок (Reply Keyboard)
 BTN_START = "🔄 Главное меню"
-BTN_REG = "📝 Тестовая регистрация"
-BTN_DEPOSIT = "💰 Тестовый депозит"
+BTN_TESTING = "🧪 Тестирование"
 BTN_CREATE_POSTBACKS = "📋 Создать постбеки"
 BTN_GET_LINKS = "🔗 Получить ссылки"
 BTN_HELP = "📖 Справка"
 BTN_BACK = "⬅️ Назад"
-CB_REG = "test_reg"
-CB_DEPOSIT = "test_deposit"
+CB_GOAL_PREFIX = "goal_pick_"
+CB_GOAL_CANCEL = "goal_cancel"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -92,8 +92,7 @@ def _help_text(user_id: int) -> str:
         "*Бот:* тестирование постбеков X-Partners и формирование URL постбеков для рекламодателей.",
         "",
         "*Кнопки:*",
-        "📝 Тестовая регистрация — отправить тестовый постбек (goal=registration, status=1)",
-        "💰 Тестовый депозит — отправить тестовый постбек (goal=deposit, status=2)",
+        "🧪 Тестирование — отправить ссылку, затем обязательно выбрать goal оффера",
         "📋 Создать постбеки — сформировать URL постбеков по offer_id для передачи рекламодателю",
         "🔗 Получить ссылки — трекинг-ссылка и лендинги оффера для вебмастера",
         "📖 Справка — эта подсказка",
@@ -104,8 +103,9 @@ def _help_text(user_id: int) -> str:
         "/cancel — отмена текущей операции",
         "",
         "*Как отправить тестовый постбек:*",
-        "1. Нажмите «Тестовая регистрация» или «Тестовый депозит»",
+        "1. Нажмите «Тестирование»",
         "2. Отправьте ссылку",
+        "3. Выберите goal оффера (обязательно)",
     ]
     if is_approved(user_id):
         lines.append("/postback\\_url <offer\\_id> — то же, что кнопка «Создать постбеки»")
@@ -334,6 +334,129 @@ async def access_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             pass
 
 
+async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработка выбора goal из inline-клавиатуры — отправка постбека."""
+    query = update.callback_query
+    await query.answer()
+
+    pending = context.user_data.get("pending_postback")
+    if not pending:
+        try:
+            await query.edit_message_text(
+                "⌛ Сессия устарела. Начните заново с кнопки «Тестовая регистрация» или «Тестовый депозит».",
+            )
+        except Exception:
+            pass
+        return
+
+    data = query.data or ""
+
+    if data == CB_GOAL_CANCEL:
+        context.user_data.pop("pending_postback", None)
+        try:
+            await query.edit_message_text("❎ Отправка постбека отменена.")
+        except Exception:
+            pass
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Выберите действие:",
+                reply_markup=_menu_keyboard(),
+            )
+        except Exception:
+            pass
+        return
+
+    if not data.startswith(CB_GOAL_PREFIX):
+        return
+
+    try:
+        idx = int(data[len(CB_GOAL_PREFIX):])
+    except ValueError:
+        await query.edit_message_text("❌ Некорректный выбор цели.")
+        context.user_data.pop("pending_postback", None)
+        return
+
+    goals = pending.get("goals") or []
+    if idx < 0 or idx >= len(goals):
+        await query.edit_message_text("❌ Цель не найдена. Начните заново.")
+        context.user_data.pop("pending_postback", None)
+        return
+
+    goal_value = goals[idx].get("value") or ""
+    goal_title = goals[idx].get("title") or goal_value
+    click_id = pending.get("click_id", "")
+    secure = pending.get("secure", "")
+    pid = pending.get("pid", "")
+    offer_id = pending.get("offer_id", "")
+    # Бизнес-правило: registration => status=1, остальные goals => status=2
+    status = 1 if goal_value.strip().lower() == "registration" else 2
+
+    try:
+        await query.edit_message_text(
+            f"⏳ Отправляю постбек с goal=`{goal_value}`...",
+            parse_mode="Markdown",
+        )
+    except Exception:
+        pass
+
+    success, message = await asyncio.to_thread(
+        send_postback, click_id, secure, goal_value, status, pid
+    )
+
+    user = update.effective_user
+    try:
+        log_postback(
+            success=success,
+            user_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            click_id=click_id,
+            offer_id=offer_id,
+            pid=pid,
+            goal=goal_value,
+            status=status,
+            error_message=None if success else message,
+        )
+    except Exception as e:
+        logger.warning("Не удалось записать лог постбека: %s", e)
+
+    context.user_data.pop("pending_postback", None)
+
+    if success:
+        result_text = (
+            f"🎉 {message}\n\n"
+            f"📋 Детали:\n"
+            f"• Goal: {goal_title} ({goal_value})\n"
+            f"• Status: {status}\n"
+            f"• ClickID: {click_id}\n"
+            f"• Offer ID: {offer_id}\n"
+            f"• Action ID: TEST_{pid or '0'}"
+        )
+    else:
+        result_text = f"❌ {message}"
+
+    try:
+        await query.edit_message_text(result_text)
+    except Exception:
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=result_text,
+            )
+        except Exception:
+            pass
+
+    try:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Выберите действие:",
+            reply_markup=_menu_keyboard(),
+        )
+    except Exception:
+        pass
+
+
 def _entry_keyboard():
     """Клавиатура после /start — только «Главное меню»."""
     return ReplyKeyboardMarkup(
@@ -346,7 +469,7 @@ def _menu_keyboard():
     """Клавиатура после нажатия «Главное меню» — 6 кнопок."""
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton(BTN_REG), KeyboardButton(BTN_DEPOSIT)],
+            [KeyboardButton(BTN_TESTING)],
             [KeyboardButton(BTN_CREATE_POSTBACKS), KeyboardButton(BTN_GET_LINKS)],
             [KeyboardButton(BTN_HELP)],
             [KeyboardButton(BTN_BACK)],
@@ -510,8 +633,8 @@ async def get_links_offer_pid(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка нажатия кнопки (текст сообщения) - запрос ссылки."""
+async def testing_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Старт тестирования: сразу запрашивает ссылку партнёра."""
     user_id = update.effective_user.id
     if not is_approved(user_id):
         await update.message.reply_text(
@@ -521,42 +644,50 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return ConversationHandler.END
 
-    text = (update.message.text or "").strip()
-    context.user_data["action"] = CB_REG if text == BTN_REG else CB_DEPOSIT
-    action_name = "тестовой регистрации" if text == BTN_REG else "тестового депозита"
-    
     await update.message.reply_text(
-        f"📎 Отправьте аффилиатную ссылку партнера для {action_name}.\n\n"
+        "📎 Отправьте аффилиатную ссылку партнера для тестирования.\n\n"
         "Бот отправит постбек.\n\n"
         "Или отправьте /cancel для отмены.",
         reply_markup=ReplyKeyboardRemove(),
     )
-    
     return AWAITING_LINK
 
 
+def _build_goals_keyboard(goals: list[dict]) -> InlineKeyboardMarkup:
+    """Строит inline-клавиатуру со списком целей оффера + кнопкой Отмена."""
+    rows = []
+    for i, g in enumerate(goals):
+        title = g.get("title") or g.get("value") or f"Goal {i + 1}"
+        value = g.get("value") or "—"
+        label = f"{title} ({value})" if title != value else title
+        if len(label) > 60:
+            label = label[:57] + "..."
+        rows.append([InlineKeyboardButton(label, callback_data=f"{CB_GOAL_PREFIX}{i}")])
+    rows.append([InlineKeyboardButton("⬅️ Отмена", callback_data=CB_GOAL_CANCEL)])
+    return InlineKeyboardMarkup(rows)
+
+
 async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка полученной ссылки - извлечение clickid, получение secure, отправка постбека."""
+    """Обработка ссылки: click_id из редиректа, secure/goals из оффера, затем выбор цели."""
     try:
         link = (update.message.text or "").strip()
         if not link:
             await update.message.reply_text("❌ Пустое сообщение. Отправьте ссылку.")
             return AWAITING_LINK
 
-        action = context.user_data.get("action", CB_REG)
-
-        # Проверяем, что это похоже на URL
         if not (link.startswith("http://") or link.startswith("https://")):
             await update.message.reply_text("❌ Пожалуйста, отправьте корректную ссылку (начинается с http:// или https://)")
             return AWAITING_LINK
 
         await update.message.reply_text("⏳ Обрабатываю ссылку...")
 
-        # 1. Извлекаем clickid, offer_id и pid из редиректа
-        clickid, offer_id, pid, error = extract_clickid_from_redirect(link)
+        # 1. Извлекаем click_id, offer_id и pid из редиректа партнёрской ссылки
+        click_id, offer_id, pid, redirect_error = await asyncio.to_thread(
+            extract_clickid_from_redirect, link
+        )
 
-        if error and not clickid:
-            await update.message.reply_text(f"❌ {error}")
+        if redirect_error and not click_id:
+            await update.message.reply_text(f"❌ {redirect_error}")
             return AWAITING_LINK
 
         if not offer_id:
@@ -566,62 +697,38 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             )
             return AWAITING_LINK
 
-        if not clickid:
-            await update.message.reply_text(f"❌ {error}")
+        if not click_id:
+            await update.message.reply_text(f"❌ {redirect_error}")
             return AWAITING_LINK
 
         await update.message.reply_text(
-            f"✅ ClickID: `{clickid}`\n✅ Offer ID: `{offer_id}`\n✅ PID: `{pid}`\n\n⏳ Секунду...",
+            f"✅ ClickID: `{click_id}`\n✅ Offer ID: `{offer_id}`\n✅ PID: `{pid}`\n\n⏳ Получаю цели оффера...",
             parse_mode="Markdown"
         )
 
-        # 2. Получаем secure из Affise API
-        secure, error = get_offer_secure(offer_id)
+        # 2. Получаем secure и список целей оффера по offer_id (click_id сюда не относится)
+        secure, goals, offer_error = await asyncio.to_thread(get_offer_details, offer_id)
 
-        if not secure:
-            await update.message.reply_text(f"❌ {error}")
-            return AWAITING_LINK
-
-        # 3. Отправляем постбекf
-        if action == CB_REG:
-            goal = "registration"
-            status = 1
-        else:
-            goal = "deposit"
-            status = 2
-
-        success, message = send_postback(clickid, secure, goal, status, pid)
-
-        user = update.effective_user
-        try:
-            log_postback(
-                success=success,
-                user_id=user.id,
-                username=user.username,
-                first_name=user.first_name,
-                click_id=clickid,
-                offer_id=offer_id,
-                pid=pid,
-                goal=goal,
-                status=status,
-                error_message=None if success else message,
-            )
-        except Exception as e:
-            logger.warning("Не удалось записать лог постбека: %s", e)
-
-        keyboard = _menu_keyboard()
-        if success:
+        if not secure or not goals:
             await update.message.reply_text(
-                f"🎉 {message}\n\n"
-                f"📋 Детали:\n"
-                f"• Goal: {goal}\n"
-                f"• Status: {status}\n"
-                f"• ClickID: {clickid}\n"
-                f"• Action ID: TEST_{pid}",
-                reply_markup=keyboard,
+                f"❌ {offer_error or 'Не удалось получить данные оффера'}",
+                reply_markup=_menu_keyboard(),
             )
-        else:
-            await update.message.reply_text(f"❌ {message}", reply_markup=keyboard)
+            return ConversationHandler.END
+
+        # 3. Сохраняем контекст и показываем пользователю выбор цели
+        context.user_data["pending_postback"] = {
+            "click_id": click_id,
+            "secure": secure,
+            "pid": pid or "",
+            "offer_id": offer_id,
+            "goals": goals,
+        }
+
+        await update.message.reply_text(
+            "🎯 Выберите goal оффера для тестового постбека:",
+            reply_markup=_build_goals_keyboard(goals),
+        )
 
         return ConversationHandler.END
 
@@ -652,7 +759,7 @@ def main() -> None:
     
     conv_handler = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Text([BTN_REG, BTN_DEPOSIT]), button_handler),
+            MessageHandler(filters.Text([BTN_TESTING]), testing_start),
         ],
         states={
             AWAITING_LINK: [
@@ -711,6 +818,12 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Text([BTN_HELP]), help_button_handler))
     application.add_handler(MessageHandler(filters.Text([BTN_BACK]), back_handler))
     application.add_handler(CallbackQueryHandler(access_callback, pattern="^access_"))
+    application.add_handler(
+        CallbackQueryHandler(
+            goal_callback,
+            pattern=f"^({CB_GOAL_PREFIX}|{CB_GOAL_CANCEL})",
+        )
+    )
     application.add_handler(conv_handler)
     application.add_handler(conv_create_postbacks)
     application.add_handler(conv_get_links)
