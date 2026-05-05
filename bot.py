@@ -38,19 +38,14 @@ from postback_logger import log_postback
 AWAITING_LINK = 1
 AWAITING_OFFER_ID = 2
 AWAITING_OFFER_PID = 3
-AWAITING_TEST_ACTION = 4
 
 # Текст кнопок (Reply Keyboard)
 BTN_START = "🔄 Главное меню"
 BTN_TESTING = "🧪 Тестирование"
-BTN_REG = "📝 Регистрация"
-BTN_DEPOSIT = "💰 Депозит"
 BTN_CREATE_POSTBACKS = "📋 Создать постбеки"
 BTN_GET_LINKS = "🔗 Получить ссылки"
 BTN_HELP = "📖 Справка"
 BTN_BACK = "⬅️ Назад"
-CB_REG = "test_reg"
-CB_DEPOSIT = "test_deposit"
 CB_GOAL_PREFIX = "goal_pick_"
 CB_GOAL_CANCEL = "goal_cancel"
 
@@ -97,7 +92,7 @@ def _help_text(user_id: int) -> str:
         "*Бот:* тестирование постбеков X-Partners и формирование URL постбеков для рекламодателей.",
         "",
         "*Кнопки:*",
-        "🧪 Тестирование — выбрать тип теста (регистрация/депозит), затем отправить ссылку",
+        "🧪 Тестирование — отправить ссылку, затем обязательно выбрать goal оффера",
         "📋 Создать постбеки — сформировать URL постбеков по offer_id для передачи рекламодателю",
         "🔗 Получить ссылки — трекинг-ссылка и лендинги оффера для вебмастера",
         "📖 Справка — эта подсказка",
@@ -109,8 +104,8 @@ def _help_text(user_id: int) -> str:
         "",
         "*Как отправить тестовый постбек:*",
         "1. Нажмите «Тестирование»",
-        "2. Выберите: «Регистрация» или «Депозит»",
-        "3. Отправьте ссылку",
+        "2. Отправьте ссылку",
+        "3. Выберите goal оффера (обязательно)",
     ]
     if is_approved(user_id):
         lines.append("/postback\\_url <offer\\_id> — то же, что кнопка «Создать постбеки»")
@@ -394,7 +389,8 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     secure = pending.get("secure", "")
     pid = pending.get("pid", "")
     offer_id = pending.get("offer_id", "")
-    status = int(pending.get("status", 1))
+    # Бизнес-правило: registration => status=1, остальные goals => status=2
+    status = 1 if goal_value.strip().lower() == "registration" else 2
 
     try:
         await query.edit_message_text(
@@ -638,7 +634,7 @@ async def get_links_offer_pid(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def testing_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Старт тестирования: сначала выбор типа (регистрация/депозит)."""
+    """Старт тестирования: сразу запрашивает ссылку партнёра."""
     user_id = update.effective_user.id
     if not is_approved(user_id):
         await update.message.reply_text(
@@ -649,32 +645,7 @@ async def testing_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "Выберите тип теста:\n\n"
-        "📝 Регистрация (status=1)\n"
-        "💰 Депозит (status=2)\n\n"
-        "Или /cancel для отмены.",
-        reply_markup=ReplyKeyboardMarkup(
-            [
-                [KeyboardButton(BTN_REG), KeyboardButton(BTN_DEPOSIT)],
-                [KeyboardButton(BTN_BACK)],
-            ],
-            resize_keyboard=True,
-        ),
-    )
-    return AWAITING_TEST_ACTION
-
-
-async def testing_action_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """После выбора типа теста запрашивает ссылку."""
-    text = (update.message.text or "").strip()
-    if text not in (BTN_REG, BTN_DEPOSIT):
-        await update.message.reply_text("❌ Выберите «Регистрация» или «Депозит».")
-        return AWAITING_TEST_ACTION
-
-    context.user_data["action"] = CB_REG if text == BTN_REG else CB_DEPOSIT
-    action_name = "тестовой регистрации" if text == BTN_REG else "тестового депозита"
-    await update.message.reply_text(
-        f"📎 Отправьте аффилиатную ссылку партнера для {action_name}.\n\n"
+        "📎 Отправьте аффилиатную ссылку партнера для тестирования.\n\n"
         "Бот отправит постбек.\n\n"
         "Или отправьте /cancel для отмены.",
         reply_markup=ReplyKeyboardRemove(),
@@ -703,8 +674,6 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         if not link:
             await update.message.reply_text("❌ Пустое сообщение. Отправьте ссылку.")
             return AWAITING_LINK
-
-        action = context.user_data.get("action", CB_REG)
 
         if not (link.startswith("http://") or link.startswith("https://")):
             await update.message.reply_text("❌ Пожалуйста, отправьте корректную ссылку (начинается с http:// или https://)")
@@ -747,22 +716,17 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             )
             return ConversationHandler.END
 
-        status = 1 if action == CB_REG else 2
-
         # 3. Сохраняем контекст и показываем пользователю выбор цели
         context.user_data["pending_postback"] = {
             "click_id": click_id,
             "secure": secure,
             "pid": pid or "",
             "offer_id": offer_id,
-            "status": status,
             "goals": goals,
-            "action": action,
         }
 
-        action_label = "регистрации" if action == CB_REG else "депозита"
         await update.message.reply_text(
-            f"🎯 Выберите цель (goal) из оффера для тестовой {action_label}:",
+            "🎯 Выберите goal оффера для тестового постбека:",
             reply_markup=_build_goals_keyboard(goals),
         )
 
@@ -798,9 +762,6 @@ def main() -> None:
             MessageHandler(filters.Text([BTN_TESTING]), testing_start),
         ],
         states={
-            AWAITING_TEST_ACTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, testing_action_selected),
-            ],
             AWAITING_LINK: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_link),
             ],
