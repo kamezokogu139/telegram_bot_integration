@@ -8,9 +8,18 @@ import httpx
 from config import AFFISE_API_URL, AFFISE_API_KEY, POSTBACK_BASE_URL, REQUEST_TIMEOUT, PROXY_URL, TRACKER_DOMAINS, TRACKING_CLICK_BASE
 
 
+def _is_tracker_hostname(hostname: str) -> bool:
+    """Проверяет точный домен трекера или его поддомен."""
+    return any(hostname == domain or hostname.endswith(f".{domain}") for domain in TRACKER_DOMAINS)
+
+
 def _is_tracker_url(url: str) -> bool:
     """Проверяет, принадлежит ли URL домену трекера."""
-    return any(domain in url for domain in TRACKER_DOMAINS)
+    try:
+        hostname = urlparse(url).hostname or ""
+    except ValueError:
+        return False
+    return _is_tracker_hostname(hostname)
 
 
 def _looks_like_click_id(value: str) -> bool:
@@ -142,6 +151,9 @@ def extract_offer_id_from_url(url: str) -> str | None:
     """
     try:
         parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        if not _is_tracker_hostname(hostname):
+            return None
         
         # Проверяем query параметры
         params = parse_qs(parsed.query)
@@ -158,8 +170,7 @@ def extract_offer_id_from_url(url: str) -> str | None:
                 return part
         
         # Проверяем поддомен (123.trk.xplink)
-        hostname = parsed.hostname or ""
-        if any(d in hostname for d in TRACKER_DOMAINS):
+        if _is_tracker_hostname(hostname):
             subdomain = hostname.split(".")[0]
             if subdomain.isdigit():
                 return subdomain
@@ -176,7 +187,7 @@ def extract_pid_from_url(url: str) -> str | None:
     try:
         parsed = urlparse(url)
         hostname = parsed.hostname or ""
-        if not any(d in hostname for d in TRACKER_DOMAINS):
+        if not _is_tracker_hostname(hostname):
             return None
 
         params = parse_qs(parsed.query)
