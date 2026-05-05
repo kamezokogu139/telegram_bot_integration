@@ -244,26 +244,34 @@ def _parse_offer_goals(offer: dict) -> list[dict]:
     Affise может называть это поле по-разному, поэтому пробуем
     несколько вариантов в порядке приоритета.
     """
-    raw_goals = offer.get("goals") or []
     result: list[dict] = []
-    for idx, g in enumerate(raw_goals):
-        if not isinstance(g, dict):
+    seen_values: set[str] = set()
+
+    # Источник целей только payments.
+    raw_payments = offer.get("payments") or []
+    for idx, payment in enumerate(raw_payments):
+        if not isinstance(payment, dict):
             continue
-        value = (
-            g.get("key")
-            or g.get("value")
-            or g.get("name")
-            or g.get("title")
-        )
-        if not value:
+        payment_goal = payment.get("goal")
+        if payment_goal is None:
             continue
-        title = g.get("title") or g.get("name") or str(value)
-        gid = g.get("id") or g.get("_id") or str(idx)
+        value_str = str(payment_goal).strip()
+        if not value_str or value_str in seen_values:
+            continue
+
+        payment_title = payment.get("title") or payment.get("name") or f"Payment goal {value_str}"
+        payment_goal_id = payment.get("goal_id")
+        if payment_goal_id is not None:
+            gid = f"payment-{payment_goal_id}-{idx}"
+        else:
+            gid = f"payment-{idx}"
+
         result.append({
             "id": str(gid),
-            "title": str(title),
-            "value": str(value),
+            "title": str(payment_title),
+            "value": value_str,
         })
+        seen_values.add(value_str)
     return result
 
 
