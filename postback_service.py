@@ -235,6 +235,26 @@ def get_offer_secure(offer_id: str) -> tuple[str | None, str]:
         return None, f"Ошибка: {str(e)}"
 
 
+def infer_postback_status(goal_value: str, goal_title: str = "") -> int:
+    """
+    Определяет status для тестового постбека по данным цели Affise.
+
+    X-Partners использует status=1 для регистрации и status=2 для остальных
+    целей. В Affise registration может прийти как строковый slug или как
+    payment goal "1".
+    """
+    value = str(goal_value or "").strip().lower()
+    title = str(goal_title or "").strip().lower()
+
+    if value in {"registration", "reg", "signup", "sign_up", "1"}:
+        return 1
+
+    if any(marker in title for marker in ("registration", "register", "signup", "sign up", "регистра")):
+        return 1
+
+    return 2
+
+
 def _parse_offer_goals(offer: dict) -> list[dict]:
     """
     Извлекает список целей оффера из ответа Affise API.
@@ -270,6 +290,7 @@ def _parse_offer_goals(offer: dict) -> list[dict]:
             "id": str(gid),
             "title": str(payment_title),
             "value": value_str,
+            "status": infer_postback_status(value_str, payment_title),
         })
         seen_values.add(value_str)
     return result
