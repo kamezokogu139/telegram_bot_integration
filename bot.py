@@ -29,6 +29,7 @@ from postback_service import (
     get_offer_secure,
     get_offer_details,
     get_offer_links,
+    infer_postback_status,
     send_postback,
     build_postback_urls_for_advertiser,
 )
@@ -389,8 +390,10 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     secure = pending.get("secure", "")
     pid = pending.get("pid", "")
     offer_id = pending.get("offer_id", "")
-    # Бизнес-правило: registration => status=1, остальные goals => status=2
-    status = 1 if goal_value.strip().lower() == "registration" else 2
+    try:
+        status = int(goals[idx].get("status"))
+    except (TypeError, ValueError):
+        status = infer_postback_status(goal_value, goal_title)
 
     try:
         await query.edit_message_text(
