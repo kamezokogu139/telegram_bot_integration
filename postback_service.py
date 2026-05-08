@@ -35,6 +35,25 @@ def _normalize_clickid_value(val: str) -> str | None:
     return None
 
 
+def infer_postback_status(goal_value: str, title: str = "") -> int:
+    """Возвращает status постбека: registration-like цели идут как 1, остальные как 2."""
+    value = (goal_value or "").strip().lower()
+    label = (title or "").strip().lower()
+    combined = f"{value} {label}".replace("_", " ").replace("-", " ")
+    words = set(combined.split())
+
+    if (
+        value == "registration"
+        or "registration" in combined
+        or "signup" in combined
+        or "sign up" in combined
+        or "регистрац" in combined
+        or "reg" in words
+    ):
+        return 1
+    return 2
+
+
 def _extract_clickid_from_url(url: str) -> str | None:
     """
     Извлекает click_id из URL. Поддерживает явные имена и sub1-sub5.
@@ -270,6 +289,7 @@ def _parse_offer_goals(offer: dict) -> list[dict]:
             "id": str(gid),
             "title": str(payment_title),
             "value": value_str,
+            "status": infer_postback_status(value_str, str(payment_title)),
         })
         seen_values.add(value_str)
     return result
