@@ -235,6 +235,32 @@ def get_offer_secure(offer_id: str) -> tuple[str | None, str]:
         return None, f"Ошибка: {str(e)}"
 
 
+def infer_postback_status(goal_value: str, goal_title: str | None = None) -> int:
+    """
+    Определяет status постбека для Affise: registration => 1, остальные goals => 2.
+
+    В payments поле goal может быть числовым идентификатором, поэтому для
+    регистраций учитываем также человекочитаемый title/name из Affise.
+    """
+    registration_terms = (
+        "registration",
+        "register",
+        "signup",
+        "sign up",
+        "регистрация",
+    )
+
+    for raw_value in (goal_value, goal_title):
+        text = str(raw_value or "").strip().lower()
+        if not text:
+            continue
+        normalized = " ".join(text.replace("-", " ").replace("_", " ").split())
+        if normalized == "reg" or normalized in registration_terms:
+            return 1
+
+    return 2
+
+
 def _parse_offer_goals(offer: dict) -> list[dict]:
     """
     Извлекает список целей оффера из ответа Affise API.
