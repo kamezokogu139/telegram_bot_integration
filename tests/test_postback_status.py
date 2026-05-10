@@ -13,6 +13,9 @@ class InferPostbackStatusTests(unittest.TestCase):
     def test_non_registration_goal_defaults_to_deposit_status(self):
         self.assertEqual(infer_postback_status("2", "Deposit"), 2)
 
+    def test_deposit_title_mentioning_registration_stays_deposit_status(self):
+        self.assertEqual(infer_postback_status("2", "Deposit after registration"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

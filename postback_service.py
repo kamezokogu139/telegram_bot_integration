@@ -255,8 +255,7 @@ def infer_postback_status(goal_value: str, goal_title: str | None = None) -> int
         if not text:
             continue
         normalized = " ".join(text.replace("-", " ").replace("_", " ").split())
-        padded = f" {normalized} "
-        if normalized == "reg" or any(f" {term} " in padded for term in registration_terms):
+        if normalized == "reg" or normalized in registration_terms:
             return 1
 
     return 2
