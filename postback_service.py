@@ -1,7 +1,7 @@
 """
 Сервис для извлечения clickid, получения secure из Affise и отправки постбеков.
 """
-from urllib.parse import urlparse, parse_qs, urljoin
+from urllib.parse import urlparse, parse_qs, urljoin, urlencode
 
 import httpx
 
@@ -331,7 +331,14 @@ def send_postback(clickid: str, secure: str, goal: str, status: int, pid: str = 
         tuple: (success, message)
     """
     action_id = f"TEST_{pid}" if pid else "TEST_0"
-    url = f"{POSTBACK_BASE_URL}?clickid={clickid}&secure={secure}&goal={goal}&status={status}&action_id={action_id}"
+    params = {
+        "clickid": clickid,
+        "secure": secure,
+        "goal": goal,
+        "status": status,
+        "action_id": action_id,
+    }
+    url = f"{POSTBACK_BASE_URL}?{urlencode(params)}"
     
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
