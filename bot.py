@@ -6,6 +6,7 @@ Telegram бот для отправки тестовых постбеков X-Pa
 """
 import asyncio
 import logging
+from uuid import uuid4
 
 from telegram import BotCommand, BotCommandScopeChat, Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -351,7 +352,20 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     data = query.data or ""
 
-    if data == CB_GOAL_CANCEL:
+    parsed_callback = _parse_goal_callback_data(data, pending)
+
+    if parsed_callback["action"] == "stale":
+        try:
+            await query.edit_message_text("⌛ Этот выбор устарел. Используйте последнюю показанную клавиатуру goal.")
+        except Exception:
+            pass
+        return
+
+    if parsed_callback["action"] == "invalid":
+        await query.edit_message_text("❌ Некорректный выбор цели.")
+        return
+
+    if parsed_callback["action"] == "cancel":
         context.user_data.pop("pending_postback", None)
         try:
             await query.edit_message_text("❎ Отправка постбека отменена.")
@@ -367,15 +381,7 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             pass
         return
 
-    if not data.startswith(CB_GOAL_PREFIX):
-        return
-
-    try:
-        idx = int(data[len(CB_GOAL_PREFIX):])
-    except ValueError:
-        await query.edit_message_text("❌ Некорректный выбор цели.")
-        context.user_data.pop("pending_postback", None)
-        return
+    idx = parsed_callback["idx"]
 
     goals = pending.get("goals") or []
     if idx < 0 or idx >= len(goals):
@@ -644,6 +650,7 @@ async def testing_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         )
         return ConversationHandler.END
 
+    context.user_data.pop("pending_postback", None)
     await update.message.reply_text(
         "📎 Отправьте аффилиатную ссылку партнера для тестирования.\n\n"
         "Бот отправит постбек.\n\n"
@@ -653,7 +660,45 @@ async def testing_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return AWAITING_LINK
 
 
-def _build_goals_keyboard(goals: list[dict]) -> InlineKeyboardMarkup:
+def _new_postback_session_id() -> str:
+    return uuid4().hex
+
+
+def _goal_callback_data(session_id: str, index: int) -> str:
+    return f"{CB_GOAL_PREFIX}{session_id}_{index}"
+
+
+def _cancel_callback_data(session_id: str) -> str:
+    return f"{CB_GOAL_CANCEL}_{session_id}"
+
+
+def _parse_goal_callback_data(data: str, pending: dict) -> dict:
+    """Разбирает callback и проверяет, что кнопка относится к текущей сессии."""
+    current_session_id = str(pending.get("session_id") or "")
+    if not current_session_id:
+        return {"action": "stale"}
+
+    if data.startswith(CB_GOAL_PREFIX):
+        payload = data[len(CB_GOAL_PREFIX):]
+        callback_session_id, separator, idx_text = payload.rpartition("_")
+        if not separator or callback_session_id != current_session_id:
+            return {"action": "stale"}
+        try:
+            return {"action": "pick", "idx": int(idx_text)}
+        except ValueError:
+            return {"action": "invalid"}
+
+    cancel_prefix = f"{CB_GOAL_CANCEL}_"
+    if data.startswith(cancel_prefix):
+        callback_session_id = data[len(cancel_prefix):]
+        if callback_session_id != current_session_id:
+            return {"action": "stale"}
+        return {"action": "cancel"}
+
+    return {"action": "invalid"}
+
+
+def _build_goals_keyboard(goals: list[dict], session_id: str) -> InlineKeyboardMarkup:
     """Строит inline-клавиатуру со списком целей оффера + кнопкой Отмена."""
     rows = []
     for i, g in enumerate(goals):
@@ -662,8 +707,8 @@ def _build_goals_keyboard(goals: list[dict]) -> InlineKeyboardMarkup:
         label = f"{title} ({value})" if title != value else title
         if len(label) > 60:
             label = label[:57] + "..."
-        rows.append([InlineKeyboardButton(label, callback_data=f"{CB_GOAL_PREFIX}{i}")])
-    rows.append([InlineKeyboardButton("⬅️ Отмена", callback_data=CB_GOAL_CANCEL)])
+        rows.append([InlineKeyboardButton(label, callback_data=_goal_callback_data(session_id, i))])
+    rows.append([InlineKeyboardButton("⬅️ Отмена", callback_data=_cancel_callback_data(session_id))])
     return InlineKeyboardMarkup(rows)
 
 
@@ -717,7 +762,9 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             return ConversationHandler.END
 
         # 3. Сохраняем контекст и показываем пользователю выбор цели
+        session_id = _new_postback_session_id()
         context.user_data["pending_postback"] = {
+            "session_id": session_id,
             "click_id": click_id,
             "secure": secure,
             "pid": pid or "",
@@ -727,7 +774,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
         await update.message.reply_text(
             "🎯 Выберите goal оффера для тестового постбека:",
-            reply_markup=_build_goals_keyboard(goals),
+            reply_markup=_build_goals_keyboard(goals, session_id),
         )
 
         return ConversationHandler.END
@@ -743,6 +790,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отмена операции."""
+    context.user_data.pop("pending_postback", None)
     await update.message.reply_text("Операция отменена.", reply_markup=_menu_keyboard())
     return ConversationHandler.END
 
@@ -753,10 +801,8 @@ async def start_in_conversation(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 
-def main() -> None:
-    """Запуск бота."""
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(_set_default_commands).build()
-    
+def _register_handlers(application) -> None:
+    """Регистрирует handlers в порядке, важном для ConversationHandler fallback."""
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Text([BTN_TESTING]), testing_start),
@@ -827,7 +873,13 @@ def main() -> None:
     application.add_handler(conv_handler)
     application.add_handler(conv_create_postbacks)
     application.add_handler(conv_get_links)
-    
+    application.add_handler(CommandHandler("cancel", cancel))
+
+
+def main() -> None:
+    """Запуск бота."""
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(_set_default_commands).build()
+    _register_handlers(application)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
