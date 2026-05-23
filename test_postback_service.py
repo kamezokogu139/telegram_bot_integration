@@ -33,7 +33,7 @@ class SendPostbackTests(unittest.TestCase):
     def test_send_postback_url_encodes_dynamic_query_values(self):
         with patch.object(postback_service.httpx, "Client", _FakeClient):
             success, _ = postback_service.send_postback(
-                clickid="clk id/1",
+                clickid="clk&id=1",
                 secure="sec&ret=2",
                 goal="dep&osit tier=1",
                 status=2,
@@ -44,7 +44,7 @@ class SendPostbackTests(unittest.TestCase):
         parsed = urlparse(_FakeClient.requested_url)
         params = parse_qs(parsed.query)
 
-        self.assertEqual(params["clickid"], ["clk id/1"])
+        self.assertEqual(params["clickid"], ["clk&id=1"])
         self.assertEqual(params["secure"], ["sec&ret=2"])
         self.assertEqual(params["goal"], ["dep&osit tier=1"])
         self.assertEqual(params["status"], ["2"])
