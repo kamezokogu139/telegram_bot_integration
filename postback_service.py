@@ -1,7 +1,7 @@
 """
 Сервис для извлечения clickid, получения secure из Affise и отправки постбеков.
 """
-from urllib.parse import urlparse, parse_qs, urljoin
+from urllib.parse import urlencode, urlparse, parse_qs, urljoin
 
 import httpx
 
@@ -235,6 +235,31 @@ def get_offer_secure(offer_id: str) -> tuple[str | None, str]:
         return None, f"Ошибка: {str(e)}"
 
 
+def infer_postback_status(goal_value: str, goal_title: str | None = None) -> int:
+    """
+    Определяет status постбека по goal из Affise.
+
+    X-Partners использует status=1 для регистрации и status=2 для остальных
+    целей. В payments регистрация часто приходит как numeric goal "1".
+    """
+    value = str(goal_value or "").strip().lower()
+    title = str(goal_title or "").strip().lower()
+    registration_values = {
+        "registration", "register", "reg", "signup", "sign_up", "sign up", "1",
+    }
+
+    if value in registration_values:
+        return 1
+
+    normalized_title = " ".join(title.replace("-", " ").replace("_", " ").split())
+    if normalized_title in registration_values or normalized_title.startswith(
+        ("registration ", "register ", "signup ", "sign up ")
+    ):
+        return 1
+
+    return 2
+
+
 def _parse_offer_goals(offer: dict) -> list[dict]:
     """
     Извлекает список целей оффера из ответа Affise API.
@@ -270,9 +295,15 @@ def _parse_offer_goals(offer: dict) -> list[dict]:
             "id": str(gid),
             "title": str(payment_title),
             "value": value_str,
+            "status": infer_postback_status(value_str, payment_title),
         })
         seen_values.add(value_str)
     return result
+
+
+def _build_postback_url(params: dict) -> str:
+    """Собирает URL постбека с безопасным encoding всех query values."""
+    return f"{POSTBACK_BASE_URL}?{urlencode(params, safe='{}')}"
 
 
 def get_offer_details(offer_id: str) -> tuple[str | None, list[dict], str]:
@@ -331,7 +362,13 @@ def send_postback(clickid: str, secure: str, goal: str, status: int, pid: str = 
         tuple: (success, message)
     """
     action_id = f"TEST_{pid}" if pid else "TEST_0"
-    url = f"{POSTBACK_BASE_URL}?clickid={clickid}&secure={secure}&goal={goal}&status={status}&action_id={action_id}"
+    url = _build_postback_url({
+        "clickid": clickid,
+        "secure": secure,
+        "goal": goal,
+        "status": status,
+        "action_id": action_id,
+    })
     
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
@@ -426,10 +463,35 @@ def build_postback_urls_for_advertiser(offer_id: str, pid: str = "108") -> tuple
     Returns:
         (url_registration, url_deposit, error_message)
     """
-    secure, error = get_offer_secure(offer_id)
+    secure, goals, error = get_offer_details(offer_id)
     if not secure:
-        return None, None, error or "Не удалось получить secure"
-    base = f"{POSTBACK_BASE_URL}?clickid={{adv_click_id}}&secure={secure}"
-    url_reg = f"{base}&goal=registration&status=1"
-    url_dep = f"{base}&goal=deposit&status=2"
+        return None, None, error or "Не удалось получить данные оффера"
+
+    reg_goal = None
+    dep_goal = None
+    for goal in goals:
+        status = int(
+            goal.get("status")
+            or infer_postback_status(goal.get("value", ""), goal.get("title", ""))
+        )
+        if status == 1 and reg_goal is None:
+            reg_goal = goal
+        elif status == 2 and dep_goal is None:
+            dep_goal = goal
+
+    if not reg_goal or not dep_goal:
+        return None, None, "У оффера не найдены цели регистрации и депозита в Affise"
+
+    url_reg = _build_postback_url({
+        "clickid": "{adv_click_id}",
+        "secure": secure,
+        "goal": reg_goal.get("value", ""),
+        "status": 1,
+    })
+    url_dep = _build_postback_url({
+        "clickid": "{adv_click_id}",
+        "secure": secure,
+        "goal": dep_goal.get("value", ""),
+        "status": 2,
+    })
     return url_reg, url_dep, ""
