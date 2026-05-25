@@ -391,6 +391,7 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     offer_id = pending.get("offer_id", "")
     # Бизнес-правило: registration => status=1, остальные goals => status=2
     status = 1 if goal_value.strip().lower() == "registration" else 2
+    context.user_data.pop("pending_postback", None)
 
     try:
         await query.edit_message_text(
@@ -420,8 +421,6 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     except Exception as e:
         logger.warning("Не удалось записать лог постбека: %s", e)
-
-    context.user_data.pop("pending_postback", None)
 
     if success:
         result_text = (
