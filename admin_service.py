@@ -4,6 +4,7 @@ Owner — единственный админ. Approved — пользовате
 """
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 
 from config import ADMINS_FILE, REQUEST_ACCESS_LOG_FILE, REQUEST_ACCESS_LIMIT_PER_DAY
@@ -11,22 +12,47 @@ from config import ADMINS_FILE, REQUEST_ACCESS_LOG_FILE, REQUEST_ACCESS_LIMIT_PE
 
 def _read() -> dict:
     if os.path.exists(ADMINS_FILE):
-        with open(ADMINS_FILE, "r") as f:
-            data = json.load(f)
-            # Миграция: если есть admins, добавляем owner в approved
-            if "approved" not in data and "admins" in data:
-                admins_list = data.get("admins", [])
-                owner_val = data.get("owner")
-                if owner_val is not None:
-                    admins_list = list(set(admins_list + [owner_val]))
-                data["approved"] = admins_list
-            return data
+        try:
+            with open(ADMINS_FILE, "r") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {"owner": None, "approved": []}
+
+        if not isinstance(data, dict):
+            return {"owner": None, "approved": []}
+
+        # Миграция: если есть admins, добавляем owner в approved
+        if "approved" not in data and "admins" in data:
+            admins_list = data.get("admins", [])
+            if not isinstance(admins_list, list):
+                admins_list = []
+            owner_val = data.get("owner")
+            if owner_val is not None:
+                admins_list = list(set(admins_list + [owner_val]))
+            data["approved"] = admins_list
+        if not isinstance(data.get("approved", []), list):
+            data["approved"] = []
+        return data
     return {"owner": None, "approved": []}
 
 
 def _write(data: dict) -> None:
-    with open(ADMINS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    directory = os.path.dirname(ADMINS_FILE) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".admins.",
+        suffix=".tmp",
+        dir=directory,
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, ADMINS_FILE)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def get_owner() -> int | None:
