@@ -13,9 +13,9 @@ from config import ADMINS_FILE, REQUEST_ACCESS_LOG_FILE, REQUEST_ACCESS_LIMIT_PE
 def _read() -> dict:
     if os.path.exists(ADMINS_FILE):
         try:
-            with open(ADMINS_FILE, "r") as f:
+            with open(ADMINS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             return {"owner": None, "approved": []}
 
         if not isinstance(data, dict):
@@ -44,7 +44,7 @@ def _write(data: dict) -> None:
         dir=directory,
     )
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
             f.write("\n")
             f.flush()

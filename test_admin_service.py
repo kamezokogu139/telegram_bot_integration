@@ -36,6 +36,20 @@ class AdminServiceStorageTests(unittest.TestCase):
 
             self.assertFalse(approved)
 
+    def test_non_utf8_admins_file_does_not_crash_auth_checks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            admins_path = os.path.join(tmpdir, "admins.json")
+            with open(admins_path, "wb") as f:
+                f.write(b"\xff\xfe")
+
+            with patch.object(admin_service, "ADMINS_FILE", admins_path):
+                try:
+                    approved = admin_service.is_approved(123)
+                except UnicodeDecodeError as exc:
+                    self.fail(f"is_approved should not crash on unreadable admins.json: {exc}")
+
+            self.assertFalse(approved)
+
     def test_failed_admins_write_keeps_existing_file_intact(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             admins_path = os.path.join(tmpdir, "admins.json")
