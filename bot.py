@@ -6,6 +6,7 @@ Telegram бот для отправки тестовых постбеков X-Pa
 """
 import asyncio
 import logging
+import uuid
 
 from telegram import BotCommand, BotCommandScopeChat, Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -29,6 +30,7 @@ from postback_service import (
     get_offer_secure,
     get_offer_details,
     get_offer_links,
+    infer_goal_status,
     send_postback,
     build_postback_urls_for_advertiser,
 )
@@ -351,7 +353,16 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     data = query.data or ""
 
-    if data == CB_GOAL_CANCEL:
+    pending_session_id = pending.get("session_id")
+
+    if data == CB_GOAL_CANCEL or data.startswith(f"{CB_GOAL_CANCEL}_"):
+        callback_session_id = data[len(CB_GOAL_CANCEL) + 1:] if data.startswith(f"{CB_GOAL_CANCEL}_") else None
+        if callback_session_id != pending_session_id:
+            try:
+                await query.edit_message_text("⌛ Эта кнопка относится к устаревшей сессии.")
+            except Exception:
+                pass
+            return
         context.user_data.pop("pending_postback", None)
         try:
             await query.edit_message_text("❎ Отправка постбека отменена.")
@@ -370,8 +381,21 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not data.startswith(CB_GOAL_PREFIX):
         return
 
+    callback_payload = data[len(CB_GOAL_PREFIX):]
+    callback_session_id = None
+    idx_str = callback_payload
+    if "_" in callback_payload:
+        callback_session_id, idx_str = callback_payload.rsplit("_", 1)
+
+    if callback_session_id != pending_session_id:
+        try:
+            await query.edit_message_text("⌛ Эта кнопка относится к устаревшей сессии.")
+        except Exception:
+            pass
+        return
+
     try:
-        idx = int(data[len(CB_GOAL_PREFIX):])
+        idx = int(idx_str)
     except ValueError:
         await query.edit_message_text("❌ Некорректный выбор цели.")
         context.user_data.pop("pending_postback", None)
@@ -389,8 +413,7 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     secure = pending.get("secure", "")
     pid = pending.get("pid", "")
     offer_id = pending.get("offer_id", "")
-    # Бизнес-правило: registration => status=1, остальные goals => status=2
-    status = 1 if goal_value.strip().lower() == "registration" else 2
+    status = int(goals[idx].get("status") or infer_goal_status(goal_value, goal_title))
 
     try:
         await query.edit_message_text(
@@ -653,7 +676,7 @@ async def testing_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return AWAITING_LINK
 
 
-def _build_goals_keyboard(goals: list[dict]) -> InlineKeyboardMarkup:
+def _build_goals_keyboard(goals: list[dict], session_id: str) -> InlineKeyboardMarkup:
     """Строит inline-клавиатуру со списком целей оффера + кнопкой Отмена."""
     rows = []
     for i, g in enumerate(goals):
@@ -662,8 +685,8 @@ def _build_goals_keyboard(goals: list[dict]) -> InlineKeyboardMarkup:
         label = f"{title} ({value})" if title != value else title
         if len(label) > 60:
             label = label[:57] + "..."
-        rows.append([InlineKeyboardButton(label, callback_data=f"{CB_GOAL_PREFIX}{i}")])
-    rows.append([InlineKeyboardButton("⬅️ Отмена", callback_data=CB_GOAL_CANCEL)])
+        rows.append([InlineKeyboardButton(label, callback_data=f"{CB_GOAL_PREFIX}{session_id}_{i}")])
+    rows.append([InlineKeyboardButton("⬅️ Отмена", callback_data=f"{CB_GOAL_CANCEL}_{session_id}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -717,7 +740,9 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             return ConversationHandler.END
 
         # 3. Сохраняем контекст и показываем пользователю выбор цели
+        session_id = uuid.uuid4().hex
         context.user_data["pending_postback"] = {
+            "session_id": session_id,
             "click_id": click_id,
             "secure": secure,
             "pid": pid or "",
@@ -727,7 +752,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
         await update.message.reply_text(
             "🎯 Выберите goal оффера для тестового постбека:",
-            reply_markup=_build_goals_keyboard(goals),
+            reply_markup=_build_goals_keyboard(goals, session_id),
         )
 
         return ConversationHandler.END
