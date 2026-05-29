@@ -414,6 +414,7 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     pid = pending.get("pid", "")
     offer_id = pending.get("offer_id", "")
     status = int(goals[idx].get("status") or infer_goal_status(goal_value, goal_title))
+    context.user_data.pop("pending_postback", None)
 
     try:
         await query.edit_message_text(
@@ -443,8 +444,6 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     except Exception as e:
         logger.warning("Не удалось записать лог постбека: %s", e)
-
-    context.user_data.pop("pending_postback", None)
 
     if success:
         result_text = (

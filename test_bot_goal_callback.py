@@ -1,3 +1,5 @@
+import asyncio
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -67,6 +69,47 @@ class GoalCallbackSessionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "log_postback"),
         ):
             await bot.goal_callback(update, context)
+
+        send_postback.assert_called_once_with("click-1", "secure", "1", 1, "108")
+        self.assertNotIn("pending_postback", context.user_data)
+
+    async def test_concurrent_goal_callbacks_send_postback_once(self):
+        update_one = SimpleNamespace(
+            callback_query=FakeQuery("goal_pick_current-session_0"),
+            effective_user=SimpleNamespace(id=42, username="tester", first_name="Test"),
+            effective_chat=SimpleNamespace(id=100),
+        )
+        update_two = SimpleNamespace(
+            callback_query=FakeQuery("goal_pick_current-session_0"),
+            effective_user=SimpleNamespace(id=42, username="tester", first_name="Test"),
+            effective_chat=SimpleNamespace(id=100),
+        )
+        context = SimpleNamespace(
+            user_data={
+                "pending_postback": {
+                    "session_id": "current-session",
+                    "click_id": "click-1",
+                    "secure": "secure",
+                    "pid": "108",
+                    "offer_id": "192",
+                    "goals": [{"value": "1", "title": "Registration", "status": 1}],
+                }
+            },
+            bot=SimpleNamespace(send_message=AsyncMock()),
+        )
+
+        def slow_send_postback(*args):
+            time.sleep(0.05)
+            return True, "ok"
+
+        with (
+            patch.object(bot, "send_postback", side_effect=slow_send_postback) as send_postback,
+            patch.object(bot, "log_postback"),
+        ):
+            await asyncio.gather(
+                bot.goal_callback(update_one, context),
+                bot.goal_callback(update_two, context),
+            )
 
         send_postback.assert_called_once_with("click-1", "secure", "1", 1, "108")
         self.assertNotIn("pending_postback", context.user_data)
