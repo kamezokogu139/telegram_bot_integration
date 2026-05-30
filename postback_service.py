@@ -1,7 +1,7 @@
 """
 Сервис для извлечения clickid, получения secure из Affise и отправки постбеков.
 """
-from urllib.parse import urlparse, parse_qs, urljoin
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import httpx
 
@@ -235,6 +235,19 @@ def get_offer_secure(offer_id: str) -> tuple[str | None, str]:
         return None, f"Ошибка: {str(e)}"
 
 
+def infer_goal_status(goal_value: str, title: str = "") -> int:
+    """Возвращает status постбека: 1 для регистрации, 2 для депозитных целей."""
+    normalized_value = (goal_value or "").strip().lower()
+    normalized_title = (title or "").strip().lower()
+    tokens = f"{normalized_value} {normalized_title}"
+
+    if normalized_value == "1":
+        return 1
+    if any(word in tokens for word in ("registration", "register", "signup", "sign up", "регистрац")):
+        return 1
+    return 2
+
+
 def _parse_offer_goals(offer: dict) -> list[dict]:
     """
     Извлекает список целей оффера из ответа Affise API.
@@ -270,9 +283,28 @@ def _parse_offer_goals(offer: dict) -> list[dict]:
             "id": str(gid),
             "title": str(payment_title),
             "value": value_str,
+            "status": infer_goal_status(value_str, str(payment_title)),
         })
         seen_values.add(value_str)
     return result
+
+
+def _build_postback_url(
+    clickid: str,
+    secure: str,
+    goal: str,
+    status: int,
+    action_id: str | None = None,
+) -> str:
+    params = {
+        "clickid": clickid,
+        "secure": secure,
+        "goal": goal,
+        "status": str(status),
+    }
+    if action_id is not None:
+        params["action_id"] = action_id
+    return f"{POSTBACK_BASE_URL}?{urlencode(params, safe='{}')}"
 
 
 def get_offer_details(offer_id: str) -> tuple[str | None, list[dict], str]:
@@ -331,7 +363,7 @@ def send_postback(clickid: str, secure: str, goal: str, status: int, pid: str = 
         tuple: (success, message)
     """
     action_id = f"TEST_{pid}" if pid else "TEST_0"
-    url = f"{POSTBACK_BASE_URL}?clickid={clickid}&secure={secure}&goal={goal}&status={status}&action_id={action_id}"
+    url = _build_postback_url(clickid, secure, goal, status, action_id)
     
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
@@ -426,10 +458,25 @@ def build_postback_urls_for_advertiser(offer_id: str, pid: str = "108") -> tuple
     Returns:
         (url_registration, url_deposit, error_message)
     """
-    secure, error = get_offer_secure(offer_id)
+    secure, goals, error = get_offer_details(offer_id)
     if not secure:
         return None, None, error or "Не удалось получить secure"
-    base = f"{POSTBACK_BASE_URL}?clickid={{adv_click_id}}&secure={secure}"
-    url_reg = f"{base}&goal=registration&status=1"
-    url_dep = f"{base}&goal=deposit&status=2"
+
+    registration_goal = next((goal for goal in goals if goal.get("status") == 1), None)
+    deposit_goal = next((goal for goal in goals if goal.get("status") == 2), None)
+    if not registration_goal or not deposit_goal:
+        return None, None, "В оффере не найдены цели регистрации и депозита"
+
+    url_reg = _build_postback_url(
+        "{adv_click_id}",
+        secure,
+        str(registration_goal.get("value", "")),
+        1,
+    )
+    url_dep = _build_postback_url(
+        "{adv_click_id}",
+        secure,
+        str(deposit_goal.get("value", "")),
+        2,
+    )
     return url_reg, url_dep, ""
