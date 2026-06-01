@@ -47,6 +47,12 @@ def _pending_postback():
     }
 
 
+def _pending_numeric_registration():
+    pending = _pending_postback()
+    pending["goals"] = [{"title": "Registration payout", "value": "1", "status": 1}]
+    return pending
+
+
 class GoalCallbackSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_legacy_goal_callback_without_consuming_current_pending(self):
         context = _FakeContext(_pending_postback())
@@ -66,6 +72,16 @@ class GoalCallbackSessionTests(unittest.IsolatedAsyncioTestCase):
             await bot.goal_callback(update, context)
 
         send_postback.assert_called_once_with("click12345", "secure", "registration", 1, "108")
+        self.assertNotIn("pending_postback", context.user_data)
+
+    async def test_uses_payment_status_for_selected_goal(self):
+        context = _FakeContext(_pending_numeric_registration())
+        update = _FakeUpdate("goal_pick_active-session_0")
+
+        with patch.object(bot, "send_postback", return_value=(True, "ok")) as send_postback:
+            await bot.goal_callback(update, context)
+
+        send_postback.assert_called_once_with("click12345", "secure", "1", 1, "108")
         self.assertNotIn("pending_postback", context.user_data)
 
     async def test_concurrent_goal_callbacks_send_postback_once(self):
