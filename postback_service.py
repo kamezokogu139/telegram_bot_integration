@@ -239,8 +239,13 @@ def infer_goal_status(goal_value: str, title: str = "") -> int:
     """Возвращает status постбека: 1 для регистрационных целей, 2 для депозитных."""
     normalized_value = (goal_value or "").strip().lower()
     normalized_title = (title or "").strip().lower()
-    tokens = f"{normalized_value} {normalized_title}"
+    tokens = f"{normalized_value} {normalized_title}".replace("_", " ").replace("-", " ")
 
+    deposit_values = {"2", "dep", "deposit", "ftd", "first deposit", "firstdeposit"}
+    if normalized_value.replace("_", " ") in deposit_values:
+        return 2
+    if any(word in tokens for word in ("deposit", "депозит", "ftd")):
+        return 2
     if normalized_value == "1":
         return 1
     if any(word in tokens for word in ("registration", "register", "signup", "sign up", "регистрац")):

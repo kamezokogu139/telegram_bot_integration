@@ -27,7 +27,6 @@ from postback_service import (
     extract_clickid_from_redirect,
     extract_offer_id_from_url,
     extract_pid_from_url,
-    get_offer_secure,
     get_offer_details,
     get_offer_links,
     infer_goal_status,
