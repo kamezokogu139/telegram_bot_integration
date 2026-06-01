@@ -22,6 +22,12 @@ class ParseOfferGoalsTests(unittest.TestCase):
             [{"value": goal["value"], "status": goal["status"]} for goal in goals],
         )
 
+    def test_deposit_goal_title_mentioning_registration_stays_deposit(self):
+        self.assertEqual(
+            2,
+            postback_service.infer_goal_status("dep", "After registration deposit"),
+        )
+
 
 class _FakeResponse:
     status_code = 200
