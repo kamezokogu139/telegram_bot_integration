@@ -1,0 +1,95 @@
+import asyncio
+import time
+import unittest
+from unittest.mock import AsyncMock, patch
+
+import bot
+
+
+class _FakeUser:
+    id = 123
+    username = "tester"
+    first_name = "Test"
+
+
+class _FakeChat:
+    id = 456
+
+
+class _FakeQuery:
+    def __init__(self, data):
+        self.data = data
+        self.answer = AsyncMock()
+        self.edit_message_text = AsyncMock()
+
+
+class _FakeUpdate:
+    def __init__(self, data):
+        self.callback_query = _FakeQuery(data)
+        self.effective_user = _FakeUser()
+        self.effective_chat = _FakeChat()
+
+
+class _FakeContext:
+    def __init__(self, pending):
+        self.user_data = {"pending_postback": pending}
+        self.bot = type("FakeBot", (), {"send_message": AsyncMock()})()
+
+
+def _pending_postback():
+    return {
+        "session_id": "active-session",
+        "click_id": "click12345",
+        "secure": "secure",
+        "pid": "108",
+        "offer_id": "4837",
+        "goals": [{"title": "Registration", "value": "registration"}],
+    }
+
+
+class GoalCallbackSessionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rejects_legacy_goal_callback_without_consuming_current_pending(self):
+        context = _FakeContext(_pending_postback())
+        update = _FakeUpdate("goal_pick_0")
+
+        with patch.object(bot, "send_postback") as send_postback:
+            await bot.goal_callback(update, context)
+
+        send_postback.assert_not_called()
+        self.assertIn("pending_postback", context.user_data)
+
+    async def test_accepts_goal_callback_only_for_matching_session(self):
+        context = _FakeContext(_pending_postback())
+        update = _FakeUpdate("goal_pick_active-session_0")
+
+        with patch.object(bot, "send_postback", return_value=(True, "ok")) as send_postback:
+            await bot.goal_callback(update, context)
+
+        send_postback.assert_called_once_with("click12345", "secure", "registration", 1, "108")
+        self.assertNotIn("pending_postback", context.user_data)
+
+    async def test_concurrent_goal_callbacks_send_postback_once(self):
+        context = _FakeContext(_pending_postback())
+        update_one = _FakeUpdate("goal_pick_active-session_0")
+        update_two = _FakeUpdate("goal_pick_active-session_0")
+
+        calls = 0
+
+        def slow_send_postback(*args):
+            nonlocal calls
+            calls += 1
+            time.sleep(0.05)
+            return True, "ok"
+
+        with patch.object(bot, "send_postback", side_effect=slow_send_postback):
+            await asyncio.gather(
+                bot.goal_callback(update_one, context),
+                bot.goal_callback(update_two, context),
+            )
+
+        self.assertEqual(calls, 1)
+        self.assertNotIn("pending_postback", context.user_data)
+
+
+if __name__ == "__main__":
+    unittest.main()
