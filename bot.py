@@ -30,6 +30,7 @@ from postback_service import (
     get_offer_secure,
     get_offer_details,
     get_offer_links,
+    infer_goal_status,
     send_postback,
     build_postback_urls_for_advertiser,
 )
@@ -418,8 +419,7 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     secure = pending.get("secure", "")
     pid = pending.get("pid", "")
     offer_id = pending.get("offer_id", "")
-    # Бизнес-правило: registration => status=1, остальные goals => status=2
-    status = 1 if goal_value.strip().lower() == "registration" else 2
+    status = int(goals[idx].get("status") or infer_goal_status(goal_value, goal_title))
 
     # Забираем pending до сетевой отправки: повторный callback увидит устаревшую сессию.
     context.user_data.pop("pending_postback", None)
