@@ -6,6 +6,7 @@ Telegram бот для отправки тестовых постбеков X-Pa
 """
 import asyncio
 import logging
+import uuid
 
 from telegram import BotCommand, BotCommandScopeChat, Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -26,9 +27,9 @@ from postback_service import (
     extract_clickid_from_redirect,
     extract_offer_id_from_url,
     extract_pid_from_url,
-    get_offer_secure,
     get_offer_details,
     get_offer_links,
+    infer_goal_status,
     send_postback,
     build_postback_urls_for_advertiser,
 )
@@ -339,6 +340,7 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     query = update.callback_query
     await query.answer()
 
+    data = query.data or ""
     pending = context.user_data.get("pending_postback")
     if not pending:
         try:
@@ -349,9 +351,24 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             pass
         return
 
-    data = query.data or ""
+    pending_session = pending.get("session_id")
 
-    if data == CB_GOAL_CANCEL:
+    def _is_current_session(callback_data: str, prefix: str) -> bool:
+        if not pending_session:
+            return callback_data == prefix or callback_data.startswith(f"{prefix}_")
+        return callback_data == f"{prefix}_{pending_session}"
+
+    def _reject_stale_callback() -> None:
+        logger.info("Отклонён устаревший callback выбора goal: %s", data)
+
+    if data.startswith(CB_GOAL_CANCEL):
+        if not _is_current_session(data, CB_GOAL_CANCEL):
+            _reject_stale_callback()
+            try:
+                await query.edit_message_text("⌛ Эта кнопка относится к устаревшей сессии. Текущий выбор не изменён.")
+            except Exception:
+                pass
+            return
         context.user_data.pop("pending_postback", None)
         try:
             await query.edit_message_text("❎ Отправка постбека отменена.")
@@ -370,8 +387,20 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not data.startswith(CB_GOAL_PREFIX):
         return
 
+    payload = data[len(CB_GOAL_PREFIX):]
+    if pending_session:
+        expected_prefix = f"{pending_session}_"
+        if not payload.startswith(expected_prefix):
+            _reject_stale_callback()
+            try:
+                await query.edit_message_text("⌛ Эта кнопка относится к устаревшей сессии. Текущий выбор не изменён.")
+            except Exception:
+                pass
+            return
+        payload = payload[len(expected_prefix):]
+
     try:
-        idx = int(data[len(CB_GOAL_PREFIX):])
+        idx = int(payload)
     except ValueError:
         await query.edit_message_text("❌ Некорректный выбор цели.")
         context.user_data.pop("pending_postback", None)
@@ -389,8 +418,10 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     secure = pending.get("secure", "")
     pid = pending.get("pid", "")
     offer_id = pending.get("offer_id", "")
-    # Бизнес-правило: registration => status=1, остальные goals => status=2
-    status = 1 if goal_value.strip().lower() == "registration" else 2
+    status = int(goals[idx].get("status") or infer_goal_status(goal_value, goal_title))
+
+    # Забираем pending до сетевой отправки: повторный callback увидит устаревшую сессию.
+    context.user_data.pop("pending_postback", None)
 
     try:
         await query.edit_message_text(
@@ -420,8 +451,6 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     except Exception as e:
         logger.warning("Не удалось записать лог постбека: %s", e)
-
-    context.user_data.pop("pending_postback", None)
 
     if success:
         result_text = (
@@ -653,7 +682,7 @@ async def testing_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return AWAITING_LINK
 
 
-def _build_goals_keyboard(goals: list[dict]) -> InlineKeyboardMarkup:
+def _build_goals_keyboard(goals: list[dict], session_id: str) -> InlineKeyboardMarkup:
     """Строит inline-клавиатуру со списком целей оффера + кнопкой Отмена."""
     rows = []
     for i, g in enumerate(goals):
@@ -662,8 +691,8 @@ def _build_goals_keyboard(goals: list[dict]) -> InlineKeyboardMarkup:
         label = f"{title} ({value})" if title != value else title
         if len(label) > 60:
             label = label[:57] + "..."
-        rows.append([InlineKeyboardButton(label, callback_data=f"{CB_GOAL_PREFIX}{i}")])
-    rows.append([InlineKeyboardButton("⬅️ Отмена", callback_data=CB_GOAL_CANCEL)])
+        rows.append([InlineKeyboardButton(label, callback_data=f"{CB_GOAL_PREFIX}{session_id}_{i}")])
+    rows.append([InlineKeyboardButton("⬅️ Отмена", callback_data=f"{CB_GOAL_CANCEL}_{session_id}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -717,7 +746,9 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             return ConversationHandler.END
 
         # 3. Сохраняем контекст и показываем пользователю выбор цели
+        session_id = uuid.uuid4().hex
         context.user_data["pending_postback"] = {
+            "session_id": session_id,
             "click_id": click_id,
             "secure": secure,
             "pid": pid or "",
@@ -727,7 +758,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
         await update.message.reply_text(
             "🎯 Выберите goal оффера для тестового постбека:",
-            reply_markup=_build_goals_keyboard(goals),
+            reply_markup=_build_goals_keyboard(goals, session_id),
         )
 
         return ConversationHandler.END
