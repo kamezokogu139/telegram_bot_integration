@@ -1,7 +1,7 @@
 """
 Сервис для извлечения clickid, получения secure из Affise и отправки постбеков.
 """
-from urllib.parse import urlparse, parse_qs, urljoin
+from urllib.parse import urlparse, parse_qs, urljoin, urlencode
 
 import httpx
 
@@ -331,7 +331,14 @@ def send_postback(clickid: str, secure: str, goal: str, status: int, pid: str = 
         tuple: (success, message)
     """
     action_id = f"TEST_{pid}" if pid else "TEST_0"
-    url = f"{POSTBACK_BASE_URL}?clickid={clickid}&secure={secure}&goal={goal}&status={status}&action_id={action_id}"
+    params = {
+        "clickid": clickid,
+        "secure": secure,
+        "goal": goal,
+        "status": str(status),
+        "action_id": action_id,
+    }
+    url = f"{POSTBACK_BASE_URL}?{urlencode(params)}"
     
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
@@ -429,7 +436,9 @@ def build_postback_urls_for_advertiser(offer_id: str, pid: str = "108") -> tuple
     secure, error = get_offer_secure(offer_id)
     if not secure:
         return None, None, error or "Не удалось получить secure"
-    base = f"{POSTBACK_BASE_URL}?clickid={{adv_click_id}}&secure={secure}"
-    url_reg = f"{base}&goal=registration&status=1"
-    url_dep = f"{base}&goal=deposit&status=2"
+    base_params = {"clickid": "{adv_click_id}", "secure": secure}
+    reg_params = {**base_params, "goal": "registration", "status": "1"}
+    dep_params = {**base_params, "goal": "deposit", "status": "2"}
+    url_reg = f"{POSTBACK_BASE_URL}?{urlencode(reg_params, safe='{}')}"
+    url_dep = f"{POSTBACK_BASE_URL}?{urlencode(dep_params, safe='{}')}"
     return url_reg, url_dep, ""
