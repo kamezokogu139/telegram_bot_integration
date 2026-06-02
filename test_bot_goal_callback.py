@@ -108,6 +108,17 @@ class GoalCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, [])
         self.assertIs(context.user_data.get("pending_postback"), pending)
 
+    async def test_legacy_cancel_callback_does_not_consume_active_pending_session(self):
+        pending = _pending()
+        pending["session_id"] = "current"
+        context = _context(pending)
+
+        with patch.object(bot, "send_postback") as send_postback:
+            await bot.goal_callback(_update("goal_cancel"), context)
+
+        send_postback.assert_not_called()
+        self.assertIs(context.user_data.get("pending_postback"), pending)
+
 
 if __name__ == "__main__":
     unittest.main()
