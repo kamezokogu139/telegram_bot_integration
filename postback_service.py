@@ -1,7 +1,7 @@
 """
 Сервис для извлечения clickid, получения secure из Affise и отправки постбеков.
 """
-from urllib.parse import urlparse, parse_qs, urljoin
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import httpx
 
@@ -33,6 +33,47 @@ def _normalize_clickid_value(val: str) -> str | None:
     if _looks_like_click_id(val):
         return val
     return None
+
+
+def _has_deposit_signal(goal_value: str, goal_title: str = "") -> bool:
+    value = (goal_value or "").strip().lower()
+    title = (goal_title or "").strip().lower()
+    combined = f"{value} {title}"
+    return any(token in combined for token in ("deposit", "депозит", "ftd")) or value in {"dep", "deposit"}
+
+
+def _has_registration_signal(goal_value: str, goal_title: str = "") -> bool:
+    value = (goal_value or "").strip().lower()
+    title = (goal_title or "").strip().lower()
+    return value in {"1", "reg", "registration"} or any(token in title for token in ("registration", "регистрация"))
+
+
+def infer_goal_status(goal_value: str, goal_title: str = "") -> int:
+    """Определяет статус постбека по goal/title из Affise payment."""
+    if _has_deposit_signal(goal_value, goal_title):
+        return 2
+    if _has_registration_signal(goal_value, goal_title):
+        return 1
+    return 2
+
+
+def _build_postback_url(
+    clickid: str,
+    secure: str,
+    goal: str,
+    status: int,
+    action_id: str | None = None,
+    safe: str = "",
+) -> str:
+    params = {
+        "clickid": clickid,
+        "secure": secure,
+        "goal": goal,
+        "status": status,
+    }
+    if action_id is not None:
+        params["action_id"] = action_id
+    return f"{POSTBACK_BASE_URL}?{urlencode(params, safe=safe)}"
 
 
 def _extract_clickid_from_url(url: str) -> str | None:
@@ -270,6 +311,7 @@ def _parse_offer_goals(offer: dict) -> list[dict]:
             "id": str(gid),
             "title": str(payment_title),
             "value": value_str,
+            "status": infer_goal_status(value_str, str(payment_title)),
         })
         seen_values.add(value_str)
     return result
@@ -331,7 +373,7 @@ def send_postback(clickid: str, secure: str, goal: str, status: int, pid: str = 
         tuple: (success, message)
     """
     action_id = f"TEST_{pid}" if pid else "TEST_0"
-    url = f"{POSTBACK_BASE_URL}?clickid={clickid}&secure={secure}&goal={goal}&status={status}&action_id={action_id}"
+    url = _build_postback_url(clickid, secure, goal, status, action_id)
     
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
@@ -426,10 +468,40 @@ def build_postback_urls_for_advertiser(offer_id: str, pid: str = "108") -> tuple
     Returns:
         (url_registration, url_deposit, error_message)
     """
-    secure, error = get_offer_secure(offer_id)
+    secure, goals, error = get_offer_details(offer_id)
     if not secure:
         return None, None, error or "Не удалось получить secure"
-    base = f"{POSTBACK_BASE_URL}?clickid={{adv_click_id}}&secure={secure}"
-    url_reg = f"{base}&goal=registration&status=1"
-    url_dep = f"{base}&goal=deposit&status=2"
+
+    registration_goal = next(
+        (
+            goal for goal in goals
+            if _has_registration_signal(goal.get("value") or "", goal.get("title") or "")
+            and not _has_deposit_signal(goal.get("value") or "", goal.get("title") or "")
+        ),
+        None,
+    )
+    deposit_goal = next(
+        (
+            goal for goal in goals
+            if _has_deposit_signal(goal.get("value") or "", goal.get("title") or "")
+        ),
+        None,
+    )
+    if not registration_goal or not deposit_goal:
+        return None, None, "У оффера должны быть цели регистрации и депозита в Affise"
+
+    url_reg = _build_postback_url(
+        "{adv_click_id}",
+        secure,
+        registration_goal.get("value") or "",
+        1,
+        safe="{}",
+    )
+    url_dep = _build_postback_url(
+        "{adv_click_id}",
+        secure,
+        deposit_goal.get("value") or "",
+        2,
+        safe="{}",
+    )
     return url_reg, url_dep, ""

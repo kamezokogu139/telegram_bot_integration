@@ -6,6 +6,7 @@ Telegram бот для отправки тестовых постбеков X-Pa
 """
 import asyncio
 import logging
+from uuid import uuid4
 
 from telegram import BotCommand, BotCommandScopeChat, Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -29,6 +30,7 @@ from postback_service import (
     get_offer_secure,
     get_offer_details,
     get_offer_links,
+    infer_goal_status,
     send_postback,
     build_postback_urls_for_advertiser,
 )
@@ -337,21 +339,53 @@ async def access_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка выбора goal из inline-клавиатуры — отправка постбека."""
     query = update.callback_query
-    await query.answer()
 
     pending = context.user_data.get("pending_postback")
     if not pending:
         try:
-            await query.edit_message_text(
+            await query.answer(
                 "⌛ Сессия устарела. Начните заново с кнопки «Тестовая регистрация» или «Тестовый депозит».",
+                show_alert=True,
+            )
+        except Exception:
+            pass
+        return
+    await query.answer()
+
+    data = query.data or ""
+    session_id = pending.get("session_id")
+    stale_text = "⌛ Эта клавиатура устарела. Используйте последний выбор goal или начните заново."
+
+    if data == CB_GOAL_CANCEL:
+        if session_id:
+            try:
+                await query.edit_message_text(stale_text)
+            except Exception:
+                pass
+            return
+        context.user_data.pop("pending_postback", None)
+        try:
+            await query.edit_message_text("❎ Отправка постбека отменена.")
+        except Exception:
+            pass
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Выберите действие:",
+                reply_markup=_menu_keyboard(),
             )
         except Exception:
             pass
         return
 
-    data = query.data or ""
-
-    if data == CB_GOAL_CANCEL:
+    if data.startswith(f"{CB_GOAL_CANCEL}_"):
+        callback_session_id = data[len(f"{CB_GOAL_CANCEL}_"):]
+        if callback_session_id != session_id:
+            try:
+                await query.edit_message_text(stale_text)
+            except Exception:
+                pass
+            return
         context.user_data.pop("pending_postback", None)
         try:
             await query.edit_message_text("❎ Отправка постбека отменена.")
@@ -370,8 +404,19 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not data.startswith(CB_GOAL_PREFIX):
         return
 
+    callback_session_id = None
+    idx_raw = data[len(CB_GOAL_PREFIX):]
+    if "_" in idx_raw:
+        callback_session_id, idx_raw = idx_raw.rsplit("_", 1)
+    if (callback_session_id or session_id) and callback_session_id != session_id:
+        try:
+            await query.edit_message_text(stale_text)
+        except Exception:
+            pass
+        return
+
     try:
-        idx = int(data[len(CB_GOAL_PREFIX):])
+        idx = int(idx_raw)
     except ValueError:
         await query.edit_message_text("❌ Некорректный выбор цели.")
         context.user_data.pop("pending_postback", None)
@@ -389,8 +434,8 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     secure = pending.get("secure", "")
     pid = pending.get("pid", "")
     offer_id = pending.get("offer_id", "")
-    # Бизнес-правило: registration => status=1, остальные goals => status=2
-    status = 1 if goal_value.strip().lower() == "registration" else 2
+    status = goals[idx].get("status") or infer_goal_status(goal_value, goal_title)
+    context.user_data.pop("pending_postback", None)
 
     try:
         await query.edit_message_text(
@@ -420,8 +465,6 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     except Exception as e:
         logger.warning("Не удалось записать лог постбека: %s", e)
-
-    context.user_data.pop("pending_postback", None)
 
     if success:
         result_text = (
@@ -653,7 +696,7 @@ async def testing_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return AWAITING_LINK
 
 
-def _build_goals_keyboard(goals: list[dict]) -> InlineKeyboardMarkup:
+def _build_goals_keyboard(goals: list[dict], session_id: str) -> InlineKeyboardMarkup:
     """Строит inline-клавиатуру со списком целей оффера + кнопкой Отмена."""
     rows = []
     for i, g in enumerate(goals):
@@ -662,8 +705,8 @@ def _build_goals_keyboard(goals: list[dict]) -> InlineKeyboardMarkup:
         label = f"{title} ({value})" if title != value else title
         if len(label) > 60:
             label = label[:57] + "..."
-        rows.append([InlineKeyboardButton(label, callback_data=f"{CB_GOAL_PREFIX}{i}")])
-    rows.append([InlineKeyboardButton("⬅️ Отмена", callback_data=CB_GOAL_CANCEL)])
+        rows.append([InlineKeyboardButton(label, callback_data=f"{CB_GOAL_PREFIX}{session_id}_{i}")])
+    rows.append([InlineKeyboardButton("⬅️ Отмена", callback_data=f"{CB_GOAL_CANCEL}_{session_id}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -723,11 +766,12 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             "pid": pid or "",
             "offer_id": offer_id,
             "goals": goals,
+            "session_id": uuid4().hex,
         }
 
         await update.message.reply_text(
             "🎯 Выберите goal оффера для тестового постбека:",
-            reply_markup=_build_goals_keyboard(goals),
+            reply_markup=_build_goals_keyboard(goals, context.user_data["pending_postback"]["session_id"]),
         )
 
         return ConversationHandler.END
