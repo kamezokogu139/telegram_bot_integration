@@ -10,7 +10,12 @@ from config import AFFISE_API_URL, AFFISE_API_KEY, POSTBACK_BASE_URL, REQUEST_TI
 
 def _is_tracker_url(url: str) -> bool:
     """Проверяет, принадлежит ли URL домену трекера."""
-    return any(domain in url for domain in TRACKER_DOMAINS)
+    hostname = (urlparse(url).hostname or "").lower().rstrip(".")
+    for domain in TRACKER_DOMAINS:
+        tracker_domain = domain.lower().rstrip(".")
+        if hostname == tracker_domain or hostname.endswith(f".{tracker_domain}"):
+            return True
+    return False
 
 
 def _looks_like_click_id(value: str) -> bool:
@@ -158,7 +163,7 @@ def extract_offer_id_from_url(url: str) -> str | None:
         
         # Проверяем поддомен (123.trk.xplink)
         hostname = parsed.hostname or ""
-        if any(d in hostname for d in TRACKER_DOMAINS):
+        if _is_tracker_url(url):
             subdomain = hostname.split(".")[0]
             if subdomain.isdigit():
                 return subdomain
@@ -174,8 +179,7 @@ def extract_pid_from_url(url: str) -> str | None:
     """
     try:
         parsed = urlparse(url)
-        hostname = parsed.hostname or ""
-        if not any(d in hostname for d in TRACKER_DOMAINS):
+        if not _is_tracker_url(url):
             return None
 
         params = parse_qs(parsed.query)
